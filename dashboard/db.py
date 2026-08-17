@@ -65,11 +65,47 @@ CREATE TABLE IF NOT EXISTS weapon_stats_history (
     current_stats_json TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS effects_applied (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL REFERENCES runs(id),
+    t_seconds REAL NOT NULL,
+    source TEXT NOT NULL,
+    effect_type TEXT NOT NULL,
+    stat TEXT,
+    modify_type TEXT,
+    amount REAL,
+    permanent INTEGER,
+    duration REAL,
+    is_positive_effect INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS player_stats_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL REFERENCES runs(id),
+    t_seconds REAL NOT NULL,
+    base_stats_json TEXT NOT NULL,
+    current_stats_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS run_counters_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL REFERENCES runs(id),
+    t_seconds REAL NOT NULL,
+    gold INTEGER,
+    character_level INTEGER,
+    banishes_used INTEGER,
+    refreshes_used INTEGER,
+    skips_used INTEGER
+);
+
 CREATE INDEX IF NOT EXISTS idx_picks_run ON picks(run_id);
 CREATE INDEX IF NOT EXISTS idx_damage_run ON damage_by_source(run_id);
 CREATE INDEX IF NOT EXISTS idx_history_run ON damage_history(run_id);
 CREATE INDEX IF NOT EXISTS idx_pick_stat_changes_pick ON pick_stat_changes(pick_id);
 CREATE INDEX IF NOT EXISTS idx_weapon_stats_run ON weapon_stats_history(run_id);
+CREATE INDEX IF NOT EXISTS idx_effects_run ON effects_applied(run_id);
+CREATE INDEX IF NOT EXISTS idx_player_stats_run ON player_stats_history(run_id);
+CREATE INDEX IF NOT EXISTS idx_run_counters_run ON run_counters_history(run_id);
 """
 
 
@@ -123,6 +159,73 @@ def add_weapon_stats_snapshot(run_id: int, t_seconds: float, weapons: list[dict]
                 for w in weapons
             ],
         )
+
+
+def add_effect_applied(run_id: int, t_seconds: float, effect: dict) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO effects_applied
+               (run_id, t_seconds, source, effect_type, stat, modify_type, amount, permanent, duration, is_positive_effect)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                run_id, t_seconds, effect["source"], effect["effectType"],
+                effect.get("stat") or None, effect.get("modifyType") or None, effect.get("amount"),
+                int(effect.get("permanent", False)), effect.get("duration"), int(effect.get("isPositiveEffect", False)),
+            ),
+        )
+
+
+def get_effects_applied(run_id: int) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT t_seconds, source, effect_type, stat, modify_type, amount, permanent, duration, is_positive_effect
+               FROM effects_applied WHERE run_id = ? ORDER BY t_seconds""",
+            (run_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def add_player_stats_snapshot(run_id: int, t_seconds: float, base_stats: list[dict], current_stats: list[dict]) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO player_stats_history (run_id, t_seconds, base_stats_json, current_stats_json) VALUES (?, ?, ?, ?)",
+            (run_id, t_seconds, json.dumps(base_stats), json.dumps(current_stats)),
+        )
+
+
+def get_final_player_stats(run_id: int) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            """SELECT base_stats_json, current_stats_json FROM player_stats_history
+               WHERE run_id = ? ORDER BY t_seconds DESC LIMIT 1""",
+            (run_id,),
+        ).fetchone()
+        if not row:
+            return None
+        return {"base_stats": json.loads(row["base_stats_json"]), "current_stats": json.loads(row["current_stats_json"])}
+
+
+def add_run_counters_snapshot(run_id: int, t_seconds: float, counters: dict) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO run_counters_history
+               (run_id, t_seconds, gold, character_level, banishes_used, refreshes_used, skips_used)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                run_id, t_seconds, counters.get("gold"), counters.get("characterLevel"),
+                counters.get("banishesUsed"), counters.get("refreshesUsed"), counters.get("skipsUsed"),
+            ),
+        )
+
+
+def get_final_run_counters(run_id: int) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            """SELECT gold, character_level, banishes_used, refreshes_used, skips_used
+               FROM run_counters_history WHERE run_id = ? ORDER BY t_seconds DESC LIMIT 1""",
+            (run_id,),
+        ).fetchone()
+        return dict(row) if row else None
 
 
 def get_weapon_stats_history(run_id: int) -> list[dict]:

@@ -66,6 +66,9 @@ async def run_detail(request: Request, run_id: int):
     history_points = db.get_damage_history(run_id)
     picks = db.get_picks_with_stat_changes(run_id)
     final_weapon_stats = db.get_final_weapon_stats(run_id)
+    effects = db.get_effects_applied(run_id)
+    final_player_stats = db.get_final_player_stats(run_id)
+    final_run_counters = db.get_final_run_counters(run_id)
     return templates.TemplateResponse(
         request,
         "run_detail.html",
@@ -74,6 +77,9 @@ async def run_detail(request: Request, run_id: int):
             "history_points": history_points,
             "picks": picks,
             "final_weapon_stats": final_weapon_stats,
+            "effects": effects,
+            "final_player_stats": final_player_stats,
+            "final_run_counters": final_run_counters,
         },
     )
 

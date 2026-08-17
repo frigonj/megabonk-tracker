@@ -14,6 +14,30 @@
   <main>
     <a class="back-link" href="/history">&larr; Back to history</a>
 
+    {% macro base_vs_current_table(base_stats, current_stats) %}
+    {% set base_map = {} %}
+    {% for s in base_stats %}{% if base_map.update({s.stat: s.value}) %}{% endif %}{% endfor %}
+    {% set current_map = {} %}
+    {% for s in current_stats %}{% if current_map.update({s.stat: s.value}) %}{% endif %}{% endfor %}
+    <table style="margin-bottom:1.25rem;">
+      <thead><tr><th>Stat</th><th>Base</th><th>Current</th><th>Change</th></tr></thead>
+      <tbody>
+        {% for stat in (base_map.keys() | list + current_map.keys() | list) | unique | sort %}
+        {% set base_val = base_map.get(stat, 0) %}
+        {% set cur_val = current_map.get(stat, 0) %}
+        <tr>
+          <td>{{ stat }}</td>
+          <td>{{ "%.2f"|format(base_val) }}</td>
+          <td>{{ "%.2f"|format(cur_val) }}</td>
+          <td class="{{ 'delta-up' if cur_val > base_val else ('delta-down' if cur_val < base_val else '') }}">
+            {{ "%+.2f"|format(cur_val - base_val) }}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endmacro %}
+
     {% if run %}
     <div class="card">
       <div class="stat-row">
@@ -22,6 +46,10 @@
         <div class="stat"><div class="label">Duration</div><div class="value">{{ run.duration_seconds }}s</div></div>
         <div class="stat"><div class="label">Total Damage</div><div class="value">{{ "%.0f"|format(run.total_damage or 0) }}</div></div>
         <div class="stat"><div class="label">Avg DPS</div><div class="value">{{ "%.1f"|format(run.avg_dps or 0) }}</div></div>
+        {% if final_run_counters %}
+        <div class="stat"><div class="label">Gold</div><div class="value">{{ final_run_counters.gold or 0 }}</div></div>
+        <div class="stat"><div class="label">Char Level</div><div class="value">{{ final_run_counters.character_level or 0 }}</div></div>
+        {% endif %}
       </div>
     </div>
 
@@ -32,34 +60,49 @@
     </div>
 
     <div class="card">
+      <h3>Player Stats (base &rarr; end of run)</h3>
+      <p style="color:var(--text-dim); font-size:0.85rem;">Player-wide stats (tomes, gravestones, shrines) as opposed to per-weapon stats below.</p>
+      {% if final_player_stats %}
+      {{ base_vs_current_table(final_player_stats.base_stats, final_player_stats.current_stats) }}
+      {% else %}
+      <div class="empty-state">No player stat snapshots recorded for this run.</div>
+      {% endif %}
+    </div>
+
+    <div class="card">
       <h3>Weapon Stats (base &rarr; end of run)</h3>
       {% if final_weapon_stats %}
       {% for w in final_weapon_stats %}
       <h4 style="margin-bottom:0.4rem;">{{ w.weapon }} <span class="pill">Lv{{ w.level }}</span></h4>
-      {% set base_map = {} %}
-      {% for s in w.base_stats %}{% if base_map.update({s.stat: s.value}) %}{% endif %}{% endfor %}
-      {% set current_map = {} %}
-      {% for s in w.current_stats %}{% if current_map.update({s.stat: s.value}) %}{% endif %}{% endfor %}
-      <table style="margin-bottom:1.25rem;">
-        <thead><tr><th>Stat</th><th>Base</th><th>Current</th><th>Change</th></tr></thead>
+      {{ base_vs_current_table(w.base_stats, w.current_stats) }}
+      {% endfor %}
+      {% else %}
+      <div class="empty-state">No weapon stat snapshots recorded for this run.</div>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      <h3>Shrine / Gravestone / Encounter Effects</h3>
+      {% if effects %}
+      <table>
+        <thead><tr><th>Time</th><th>Source</th><th>Effect</th><th>Stat</th><th>Amount</th><th>Duration</th></tr></thead>
         <tbody>
-          {% for stat in (base_map.keys() | list + current_map.keys() | list) | unique | sort %}
-          {% set base_val = base_map.get(stat, 0) %}
-          {% set cur_val = current_map.get(stat, 0) %}
+          {% for e in effects %}
           <tr>
-            <td>{{ stat }}</td>
-            <td>{{ "%.2f"|format(base_val) }}</td>
-            <td>{{ "%.2f"|format(cur_val) }}</td>
-            <td class="{{ 'delta-up' if cur_val > base_val else ('delta-down' if cur_val < base_val else '') }}">
-              {{ "%+.2f"|format(cur_val - base_val) }}
+            <td>{{ "%.0f"|format(e.t_seconds) }}s</td>
+            <td>{{ e.source }}</td>
+            <td>{{ e.effect_type }}</td>
+            <td>{{ e.stat or "-" }}</td>
+            <td class="{{ 'delta-up' if e.is_positive_effect else 'delta-down' }}">
+              {{ "%+.2f"|format(e.amount) if e.amount is not none else "-" }}{{ "x" if e.modify_type == "Multiplication" else "" }}
             </td>
+            <td>{{ "permanent" if e.permanent else (("%.0fs"|format(e.duration)) if e.duration else "-") }}</td>
           </tr>
           {% endfor %}
         </tbody>
       </table>
-      {% endfor %}
       {% else %}
-      <div class="empty-state">No weapon stat snapshots recorded for this run.</div>
+      <div class="empty-state">No shrine/gravestone/encounter effects recorded for this run.</div>
       {% endif %}
     </div>
 

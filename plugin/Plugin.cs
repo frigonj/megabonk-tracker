@@ -6,6 +6,7 @@ using Assets.Scripts.Inventory__Items__Pickups.Stats;
 using Assets.Scripts.Inventory__Items__Pickups.Weapons;
 using Assets.Scripts.Menu.Shop;
 using Assets.Scripts.Saves___Serialization.Progression.Stats;
+using Assets.Scripts.UI.InGame.Rewards;
 using BepInEx;
 using BepInEx.Logging;
 using BepInEx.Unity.IL2CPP;
@@ -49,6 +50,7 @@ public static class Patch_GameManager_StartPlaying
         DamagePoller.RunActive = true;
         DamagePoller.ActiveGameManager = __instance;
         DamagePoller.KnownWeaponBaseStats.Clear();
+        DamagePoller.KnownPlayerBaseStats = null;
         EventSink.Emit(new RunStartedEvent());
     }
 }
@@ -96,6 +98,58 @@ public static class Patch_UpgradePicker_SelectUpgrade
     }
 }
 
+// EffectStat.ApplyEffect is the shared mechanism behind shrine buffs, gravestone effects, and
+// encounter-reward stat changes - EffectStat itself has no back-reference to whatever triggered it,
+// so the source-specific patches below stash a name in EffectSource just before the effect queue
+// processes, and the ApplyEffect postfix reads it. Best-effort: a source class not patched here
+// will still be captured with source="unknown" rather than silently dropped.
+public static class EffectSource
+{
+    public static string Current = "unknown";
+}
+
+[HarmonyPatch(typeof(InteractableShrineGreed), "Interact")]
+public static class Patch_ShrineGreed_Interact
+{
+    private static void Prefix() => EffectSource.Current = "ShrineGreed";
+}
+
+[HarmonyPatch(typeof(InteractableGravestone), "Interact")]
+public static class Patch_Gravestone_Interact
+{
+    private static void Prefix() => EffectSource.Current = "Gravestone";
+}
+
+[HarmonyPatch(typeof(EncounterOffer), "ApplyEffects")]
+public static class Patch_EncounterOffer_ApplyEffects
+{
+    private static void Prefix() => EffectSource.Current = "EncounterOffer";
+}
+
+[HarmonyPatch(typeof(EffectStat), "ApplyEffect")]
+public static class Patch_EffectStat_ApplyEffect
+{
+    private static void Postfix(EffectStat __instance)
+    {
+        if (__instance == null) return;
+        var mod = __instance.statModifier;
+
+        EventSink.Emit(new EffectAppliedEvent
+        {
+            source = EffectSource.Current,
+            effectType = __instance.effectType.ToString(),
+            stat = mod != null ? mod.stat.ToString() : "",
+            modifyType = mod != null ? mod.modifyType.ToString() : "",
+            amount = mod != null ? mod.modification : __instance.value,
+            permanent = __instance.permanent,
+            duration = __instance.duration,
+            isPositiveEffect = __instance.isPositiveEffect
+        });
+
+        EffectSource.Current = "unknown";
+    }
+}
+
 public class DamagePoller : MonoBehaviour
 {
     public static bool RunActive;
@@ -104,6 +158,7 @@ public class DamagePoller : MonoBehaviour
     // Base stats are fixed per weapon type and only need to be captured once, the first time
     // that weapon is seen this run - avoids re-walking all EStat values every tick for no reason.
     public static readonly Dictionary<EWeapon, StatValueEntry[]> KnownWeaponBaseStats = new();
+    public static StatValueEntry[] KnownPlayerBaseStats;
 
     private static readonly EStat[] AllStats = (EStat[])System.Enum.GetValues(typeof(EStat));
 
@@ -118,6 +173,8 @@ public class DamagePoller : MonoBehaviour
         _timer = 0f;
         EmitSnapshot();
         EmitWeaponStatsSnapshot();
+        EmitPlayerStatsSnapshot();
+        EmitRunCountersSnapshot();
     }
 
     public static void EmitSnapshot()
@@ -168,6 +225,36 @@ public class DamagePoller : MonoBehaviour
         }
 
         EventSink.Emit(new WeaponStatsSnapshotEvent { weapons = weaponEntries.ToArray() });
+    }
+
+    public static void EmitPlayerStatsSnapshot()
+    {
+        var playerStats = ActiveGameManager?.GetPlayerInventory()?.playerStats;
+        if (playerStats == null) return;
+
+        KnownPlayerBaseStats ??= ReadStats(PlayerStatsNew.GetBaseValue);
+        var currentStats = ReadStats(playerStats.GetStat);
+
+        EventSink.Emit(new PlayerStatsSnapshotEvent
+        {
+            baseStats = KnownPlayerBaseStats,
+            currentStats = currentStats
+        });
+    }
+
+    public static void EmitRunCountersSnapshot()
+    {
+        var inventory = ActiveGameManager?.GetPlayerInventory();
+        if (inventory == null) return;
+
+        EventSink.Emit(new RunCountersSnapshotEvent
+        {
+            gold = inventory.goldInt,
+            characterLevel = inventory.GetCharacterLevel(),
+            banishesUsed = inventory.banishesUsed,
+            refreshesUsed = inventory.refreshesUsed,
+            skipsUsed = inventory.skipsUsed
+        });
     }
 
     private static StatValueEntry[] ReadStats(System.Func<EStat, float> getValue)

@@ -70,3 +70,33 @@ public sealed class StatValueEntry
     public string stat = "";
     public float value;
 }
+
+public sealed class EffectAppliedEvent : TrackerEvent
+{
+    public EffectAppliedEvent() => type = "effect_applied";
+    public string source = ""; // class name of whatever triggered this (shrine, gravestone, encounter reward, etc.)
+    public string effectType = "";
+    public string stat = "";
+    public string modifyType = "";
+    public float amount;
+    public bool permanent;
+    public float duration;
+    public bool isPositiveEffect;
+}
+
+public sealed class PlayerStatsSnapshotEvent : TrackerEvent
+{
+    public PlayerStatsSnapshotEvent() => type = "player_stats_snapshot";
+    public StatValueEntry[] baseStats = Array.Empty<StatValueEntry>();
+    public StatValueEntry[] currentStats = Array.Empty<StatValueEntry>();
+}
+
+public sealed class RunCountersSnapshotEvent : TrackerEvent
+{
+    public RunCountersSnapshotEvent() => type = "run_counters_snapshot";
+    public int gold;
+    public int characterLevel;
+    public int banishesUsed;
+    public int refreshesUsed;
+    public int skipsUsed;
+}

@@ -30,6 +30,22 @@ public static class SimpleJson
             Field("type", e.type), Field("ts", e.ts),
             FieldRaw("weapons", SerializeArray(e.weapons, SerializeWeaponStats))),
 
+        EffectAppliedEvent e => Obj(
+            Field("type", e.type), Field("ts", e.ts),
+            Field("source", e.source), Field("effectType", e.effectType),
+            Field("stat", e.stat), Field("modifyType", e.modifyType), Field("amount", e.amount),
+            Field("permanent", e.permanent), Field("duration", e.duration), Field("isPositiveEffect", e.isPositiveEffect)),
+
+        PlayerStatsSnapshotEvent e => Obj(
+            Field("type", e.type), Field("ts", e.ts),
+            FieldRaw("baseStats", SerializeArray(e.baseStats, SerializeStatValue)),
+            FieldRaw("currentStats", SerializeArray(e.currentStats, SerializeStatValue))),
+
+        RunCountersSnapshotEvent e => Obj(
+            Field("type", e.type), Field("ts", e.ts),
+            Field("gold", e.gold), Field("characterLevel", e.characterLevel),
+            Field("banishesUsed", e.banishesUsed), Field("refreshesUsed", e.refreshesUsed), Field("skipsUsed", e.skipsUsed)),
+
         _ => "{}"
     };
 
@@ -65,6 +81,7 @@ public static class SimpleJson
     private static string Field(string key, string value) => $"\"{key}\":{Quote(value)}";
     private static string Field(string key, int value) => $"\"{key}\":{value.ToString(CultureInfo.InvariantCulture)}";
     private static string Field(string key, float value) => $"\"{key}\":{value.ToString(CultureInfo.InvariantCulture)}";
+    private static string Field(string key, bool value) => $"\"{key}\":{(value ? "true" : "false")}";
     private static string FieldRaw(string key, string rawJson) => $"\"{key}\":{rawJson}";
 
     private static string Quote(string s)

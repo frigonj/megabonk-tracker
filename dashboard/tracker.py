@@ -24,6 +24,9 @@ class LiveState:
         self.sources: list[dict] = []
         self.damage_history: list[dict] = []
         self.weapon_stats: list[dict] = []
+        self.player_stats: dict = {"base_stats": [], "current_stats": []}
+        self.effects: list[dict] = []
+        self.run_counters: dict = {}
         self.clients: set[WebSocket] = set()
 
     def to_dict(self) -> dict:
@@ -35,6 +38,9 @@ class LiveState:
             "sources": sorted(self.sources, key=lambda s: s["damage"], reverse=True),
             "damage_history": self.damage_history,
             "weapon_stats": self.weapon_stats,
+            "player_stats": self.player_stats,
+            "effects": self.effects,
+            "run_counters": self.run_counters,
         }
 
 
@@ -66,6 +72,9 @@ def _handle_event(evt: dict) -> None:
         state.sources = []
         state.damage_history = []
         state.weapon_stats = []
+        state.player_stats = {"base_stats": [], "current_stats": []}
+        state.effects = []
+        state.run_counters = {}
 
     elif etype == "upgrade_picked":
         if state.run_id is None:
@@ -84,6 +93,28 @@ def _handle_event(evt: dict) -> None:
         if state.run_id is not None and state.run_started_at is not None:
             t = (datetime.fromisoformat(evt["ts"]) - state.run_started_at).total_seconds()
             db.add_weapon_stats_snapshot(state.run_id, t, state.weapon_stats)
+
+    elif etype == "effect_applied":
+        state.effects.append(evt)
+        if state.run_id is not None and state.run_started_at is not None:
+            t = (datetime.fromisoformat(evt["ts"]) - state.run_started_at).total_seconds()
+            db.add_effect_applied(state.run_id, t, evt)
+
+    elif etype == "player_stats_snapshot":
+        state.player_stats = {"base_stats": evt.get("baseStats", []), "current_stats": evt.get("currentStats", [])}
+        if state.run_id is not None and state.run_started_at is not None:
+            t = (datetime.fromisoformat(evt["ts"]) - state.run_started_at).total_seconds()
+            db.add_player_stats_snapshot(state.run_id, t, evt.get("baseStats", []), evt.get("currentStats", []))
+
+    elif etype == "run_counters_snapshot":
+        state.run_counters = {
+            "gold": evt.get("gold"), "character_level": evt.get("characterLevel"),
+            "banishes_used": evt.get("banishesUsed"), "refreshes_used": evt.get("refreshesUsed"),
+            "skips_used": evt.get("skipsUsed"),
+        }
+        if state.run_id is not None and state.run_started_at is not None:
+            t = (datetime.fromisoformat(evt["ts"]) - state.run_started_at).total_seconds()
+            db.add_run_counters_snapshot(state.run_id, t, evt)
 
     elif etype == "damage_snapshot":
         state.total_damage = evt.get("totalDamage", 0.0)

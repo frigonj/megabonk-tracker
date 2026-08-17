@@ -26,6 +26,14 @@
           <div class="label">Character</div>
           <div class="value" id="character">-</div>
         </div>
+        <div class="stat">
+          <div class="label">Gold</div>
+          <div class="value" id="gold">0</div>
+        </div>
+        <div class="stat">
+          <div class="label">Char Level</div>
+          <div class="value" id="char-level">0</div>
+        </div>
       </div>
     </div>
 
@@ -50,9 +58,21 @@
     </div>
 
     <div class="card">
+      <h3>Player Stats</h3>
+      <div id="player-stats"></div>
+      <div class="empty-state" id="player-stats-empty">No player stats yet.</div>
+    </div>
+
+    <div class="card">
       <h3>Weapon Stats</h3>
       <div id="weapon-stats"></div>
       <div class="empty-state" id="weapon-stats-empty">No weapon stats yet.</div>
+    </div>
+
+    <div class="card">
+      <h3>Shrine / Gravestone / Encounter Effects</h3>
+      <div class="pick-log" id="effects-log"></div>
+      <div class="empty-state" id="effects-empty">No effects applied yet.</div>
     </div>
   </main>
 
@@ -62,15 +82,44 @@
     const statusEl = document.getElementById("status");
     const totalDamageEl = document.getElementById("total-damage");
     const characterEl = document.getElementById("character");
+    const goldEl = document.getElementById("gold");
+    const charLevelEl = document.getElementById("char-level");
     const damageBody = document.querySelector("#damage-table tbody");
     const damageEmpty = document.getElementById("damage-empty");
     const pickLog = document.getElementById("pick-log");
     const picksEmpty = document.getElementById("picks-empty");
     const weaponStatsEl = document.getElementById("weapon-stats");
     const weaponStatsEmpty = document.getElementById("weapon-stats-empty");
+    const playerStatsEl = document.getElementById("player-stats");
+    const playerStatsEmpty = document.getElementById("player-stats-empty");
+    const effectsLog = document.getElementById("effects-log");
+    const effectsEmpty = document.getElementById("effects-empty");
 
     function fmt(n) {
       return Math.round(n).toLocaleString();
+    }
+
+    function renderStatTable(container, baseStats, currentStats) {
+      const table = document.createElement("table");
+      table.style.marginBottom = "1rem";
+      const thead = document.createElement("thead");
+      thead.innerHTML = "<tr><th>Stat</th><th>Base</th><th>Current</th><th>Change</th></tr>";
+      table.appendChild(thead);
+      const tbody = document.createElement("tbody");
+      const baseMap = Object.fromEntries((baseStats || []).map((s) => [s.stat, s.value]));
+      const curMap = Object.fromEntries((currentStats || []).map((s) => [s.stat, s.value]));
+      const allStats = [...new Set([...Object.keys(baseMap), ...Object.keys(curMap)])].sort();
+      for (const stat of allStats) {
+        const b = baseMap[stat] || 0;
+        const c = curMap[stat] || 0;
+        const delta = c - b;
+        const deltaClass = delta > 0 ? "delta-up" : delta < 0 ? "delta-down" : "";
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td>${stat}</td><td>${b.toFixed(2)}</td><td>${c.toFixed(2)}</td><td class="${deltaClass}">${delta >= 0 ? "+" : ""}${delta.toFixed(2)}</td>`;
+        tbody.appendChild(tr);
+      }
+      table.appendChild(tbody);
+      container.appendChild(table);
     }
 
     function render(state) {
@@ -109,27 +158,28 @@
         h4.style.marginBottom = "0.4rem";
         h4.innerHTML = `${w.weapon} <span class="pill">Lv${w.level}</span>`;
         weaponStatsEl.appendChild(h4);
+        renderStatTable(weaponStatsEl, w.baseStats, w.currentStats);
+      }
 
-        const table = document.createElement("table");
-        table.style.marginBottom = "1rem";
-        const thead = document.createElement("thead");
-        thead.innerHTML = "<tr><th>Stat</th><th>Base</th><th>Current</th><th>Change</th></tr>";
-        table.appendChild(thead);
-        const tbody = document.createElement("tbody");
-        const baseMap = Object.fromEntries((w.baseStats || []).map((s) => [s.stat, s.value]));
-        const curMap = Object.fromEntries((w.currentStats || []).map((s) => [s.stat, s.value]));
-        const allStats = [...new Set([...Object.keys(baseMap), ...Object.keys(curMap)])].sort();
-        for (const stat of allStats) {
-          const b = baseMap[stat] || 0;
-          const c = curMap[stat] || 0;
-          const delta = c - b;
-          const deltaClass = delta > 0 ? "delta-up" : delta < 0 ? "delta-down" : "";
-          const tr = document.createElement("tr");
-          tr.innerHTML = `<td>${stat}</td><td>${b.toFixed(2)}</td><td>${c.toFixed(2)}</td><td class="${deltaClass}">${delta >= 0 ? "+" : ""}${delta.toFixed(2)}</td>`;
-          tbody.appendChild(tr);
-        }
-        table.appendChild(tbody);
-        weaponStatsEl.appendChild(table);
+      const playerStats = state.player_stats || { base_stats: [], current_stats: [] };
+      playerStatsEl.innerHTML = "";
+      const hasPlayerStats = (playerStats.base_stats || []).length || (playerStats.current_stats || []).length;
+      playerStatsEmpty.style.display = hasPlayerStats ? "none" : "block";
+      if (hasPlayerStats) renderStatTable(playerStatsEl, playerStats.base_stats, playerStats.current_stats);
+
+      const counters = state.run_counters || {};
+      goldEl.textContent = fmt(counters.gold || 0);
+      charLevelEl.textContent = counters.character_level || 0;
+
+      const effects = state.effects || [];
+      effectsLog.innerHTML = "";
+      effectsEmpty.style.display = effects.length ? "none" : "block";
+      for (const e of [...effects].reverse()) {
+        const div = document.createElement("div");
+        div.className = "pick-log-item";
+        const amountText = e.stat ? `${e.stat} ${e.amount >= 0 ? "+" : ""}${e.amount.toFixed(2)}${e.modifyType === "Multiplication" ? "x" : ""}` : "";
+        div.innerHTML = `<span class="pill">${e.source}</span> ${e.effectType} <span class="pill">${amountText}</span>`;
+        effectsLog.appendChild(div);
       }
     }
 
