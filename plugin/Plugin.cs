@@ -72,12 +72,14 @@ public static class Patch_GameManager_OnDied
         try
         {
             DamagePoller.EmitSnapshot();
+            DamagePoller.EmitWeaponStatsSnapshot();
+            DamagePoller.EmitPlayerStatsSnapshot();
         }
         catch (System.Exception ex)
         {
-            Plugin.Log?.LogError($"DamagePoller.EmitSnapshot failed during OnDied: {ex}");
+            Plugin.Log?.LogError($"DamagePoller end-of-run snapshot failed during OnDied: {ex}");
         }
-        // RunEndedEvent must fire regardless of whether the final snapshot succeeded, so the
+        // RunEndedEvent must fire regardless of whether the final snapshots succeeded, so the
         // dashboard doesn't leave the run stuck showing "in progress" forever.
         EventSink.Emit(new RunEndedEvent { outcome = "died" });
     }
@@ -236,11 +238,14 @@ public class DamagePoller : MonoBehaviour
         // An uncaught exception here kills every poll for the rest of the run (Unity swallows it,
         // Update() never runs again on the affected object) - log and keep going rather than lose
         // the whole event stream to one bad snapshot.
+        //
+        // Weapon and player stats are NOT polled here - walking all EStat values against every
+        // weapon/player every second caused a noticeable in-game stutter. They're cheap to skip
+        // live since the build-analysis use case only needs the end-of-run values; captured once
+        // in OnDied instead. Damage and run counters are cheap reads and stay live.
         try
         {
             EmitSnapshot();
-            EmitWeaponStatsSnapshot();
-            EmitPlayerStatsSnapshot();
             EmitRunCountersSnapshot();
         }
         catch (System.Exception ex)
