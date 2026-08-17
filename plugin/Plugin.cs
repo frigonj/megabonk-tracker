@@ -88,7 +88,13 @@ public static class Patch_GameManager_OnDied
 [HarmonyPatch(typeof(UpgradePicker), "SelectUpgrade")]
 public static class Patch_UpgradePicker_SelectUpgrade
 {
-    private static void Postfix(IUpgradable upgradable, List<StatModifier> upgradeOffer, UpgradeButton btn, ERarity rarity)
+    // Prefix, not Postfix: upgradeOffer's IndexOutOfRangeException (both via foreach and via
+    // indexed get_Item) pointed at the native-backed list being mutated out from under us. The
+    // most likely cause is SelectUpgrade's own body consuming/clearing the offer list as part of
+    // applying the pick - reading it before the original method runs, while it's still in its
+    // pre-mutation state, avoids the race instead of trying to read it faster/more defensively
+    // after the fact.
+    private static void Prefix(IUpgradable upgradable, List<StatModifier> upgradeOffer, UpgradeButton btn, ERarity rarity)
     {
         try
         {
@@ -97,13 +103,18 @@ public static class Patch_UpgradePicker_SelectUpgrade
             var statChanges = new List<StatChangeEntry>();
             if (upgradeOffer != null)
             {
-                // Index rather than foreach - the Il2Cpp List<T> enumerator has thrown
-                // IndexOutOfRangeException here in practice; indexed access is more robust
-                // against interop collections whose native backing may be in flux.
                 int count = upgradeOffer.Count;
                 for (int i = 0; i < count; i++)
                 {
-                    var mod = upgradeOffer[i];
+                    StatModifier mod;
+                    try
+                    {
+                        mod = upgradeOffer[i];
+                    }
+                    catch (System.Exception)
+                    {
+                        break; // list shrank under us - stop rather than keep indexing past its new end
+                    }
                     if (mod == null) continue;
                     statChanges.Add(new StatChangeEntry
                     {
@@ -223,6 +234,18 @@ public class DamagePoller : MonoBehaviour
     public static readonly Dictionary<EWeapon, StatValueEntry[]> KnownWeaponBaseStats = new();
     public static StatValueEntry[] KnownPlayerBaseStats;
 
+    // GetBaseStat/GetValue/GetStat throw for any EStat the underlying dictionary doesn't define -
+    // that's how the game itself is written, not something this plugin can avoid at the call site.
+    // Walking all 57 EStat values every tick meant eating that exception on ~50 of them per weapon
+    // per second, which is expensive even caught. Once the first pass on a given weapon/player
+    // discovers which keys actually exist (didn't throw), every later read only tries those -
+    // collapsing the exception count from "every stat, every tick" to "every stat, once".
+    public static readonly Dictionary<EWeapon, EStat[]> KnownWeaponValidStats = new();
+    public static EStat[] KnownPlayerValidStats;
+
+    public static int ExceptionsThisSecond;
+    private static float _exceptionLogTimer;
+
     private static readonly EStat[] AllStats = (EStat[])System.Enum.GetValues(typeof(EStat));
 
     private const float PollIntervalSeconds = 1f;
@@ -232,21 +255,28 @@ public class DamagePoller : MonoBehaviour
     {
         if (!RunActive || IsPaused) return;
         _timer += Time.deltaTime;
+        _exceptionLogTimer += Time.deltaTime;
+
+        if (_exceptionLogTimer >= 1f)
+        {
+            if (ExceptionsThisSecond > 0)
+                Plugin.Log?.LogInfo($"DamagePoller: {ExceptionsThisSecond} stat-lookup exceptions in the last second");
+            ExceptionsThisSecond = 0;
+            _exceptionLogTimer = 0f;
+        }
+
         if (_timer < PollIntervalSeconds) return;
         _timer = 0f;
 
         // An uncaught exception here kills every poll for the rest of the run (Unity swallows it,
         // Update() never runs again on the affected object) - log and keep going rather than lose
         // the whole event stream to one bad snapshot.
-        //
-        // Weapon and player stats are NOT polled here - walking all EStat values against every
-        // weapon/player every second caused a noticeable in-game stutter. They're cheap to skip
-        // live since the build-analysis use case only needs the end-of-run values; captured once
-        // in OnDied instead. Damage and run counters are cheap reads and stay live.
         try
         {
             EmitSnapshot();
             EmitRunCountersSnapshot();
+            EmitWeaponStatsSnapshot();
+            EmitPlayerStatsSnapshot();
         }
         catch (System.Exception ex)
         {
@@ -284,13 +314,29 @@ public class DamagePoller : MonoBehaviour
             var weapon = kv.Value;
             if (weapon == null) continue;
 
-            if (!KnownWeaponBaseStats.TryGetValue(eWeapon, out var baseStats))
+            StatValueEntry[] baseStats;
+            if (KnownWeaponBaseStats.TryGetValue(eWeapon, out var cachedBase))
             {
-                baseStats = ReadStats(stat => weapon.weaponData?.GetBaseStat(stat) ?? 0f);
+                baseStats = cachedBase;
+            }
+            else
+            {
+                var (entries, _) = DiscoverValidStats(stat => weapon.weaponData?.GetBaseStat(stat) ?? 0f);
+                baseStats = entries;
                 KnownWeaponBaseStats[eWeapon] = baseStats;
             }
 
-            var currentStats = ReadStats(weapon.GetValue);
+            StatValueEntry[] currentStats;
+            if (KnownWeaponValidStats.TryGetValue(eWeapon, out var validCurrentStats))
+            {
+                currentStats = ReadKnownStats(validCurrentStats, weapon.GetValue);
+            }
+            else
+            {
+                var (entries, valid) = DiscoverValidStats(weapon.GetValue);
+                currentStats = entries;
+                KnownWeaponValidStats[eWeapon] = valid;
+            }
 
             weaponEntries.Add(new WeaponStatsEntry
             {
@@ -309,8 +355,23 @@ public class DamagePoller : MonoBehaviour
         var playerStats = ActiveGameManager?.GetPlayerInventory()?.playerStats;
         if (playerStats == null) return;
 
-        KnownPlayerBaseStats ??= ReadStats(PlayerStatsNew.GetBaseValue);
-        var currentStats = ReadStats(playerStats.GetStat);
+        if (KnownPlayerBaseStats == null)
+        {
+            var (entries, _) = DiscoverValidStats(PlayerStatsNew.GetBaseValue);
+            KnownPlayerBaseStats = entries;
+        }
+
+        StatValueEntry[] currentStats;
+        if (KnownPlayerValidStats != null)
+        {
+            currentStats = ReadKnownStats(KnownPlayerValidStats, playerStats.GetStat);
+        }
+        else
+        {
+            var (entries, valid) = DiscoverValidStats(playerStats.GetStat);
+            currentStats = entries;
+            KnownPlayerValidStats = valid;
+        }
 
         EventSink.Emit(new PlayerStatsSnapshotEvent
         {
@@ -334,24 +395,41 @@ public class DamagePoller : MonoBehaviour
         });
     }
 
-    private static StatValueEntry[] ReadStats(System.Func<EStat, float> getValue)
+    // Walks every EStat once, catching the expected per-key exception, and returns both the
+    // rendered entries and the subset of keys that didn't throw - callers cache that key set
+    // and use ReadKnownStats from then on to avoid re-triggering the exception every tick.
+    private static (StatValueEntry[] entries, EStat[] validStats) DiscoverValidStats(System.Func<EStat, float> getValue)
     {
         var result = new List<StatValueEntry>();
+        var valid = new List<EStat>();
         foreach (var stat in AllStats)
         {
             float value;
             try
             {
-                // Not every EStat is defined for every weapon/player stat dictionary - the game's own
-                // GetBaseStat/GetStat throw KeyNotFoundException for stats that simply aren't tracked
-                // there (e.g. a weapon has no MaxHealth entry), rather than returning a default.
                 value = getValue(stat);
             }
             catch (System.Exception)
             {
+                ExceptionsThisSecond++;
                 continue;
             }
-            if (value == 0f) continue; // skip stats this weapon doesn't use
+            valid.Add(stat);
+            if (value == 0f) continue; // skip stats this weapon doesn't use, but it's still a "valid" key
+            result.Add(new StatValueEntry { stat = stat.ToString(), value = value });
+        }
+        return (result.ToArray(), valid.ToArray());
+    }
+
+    // Fast path once valid keys are known for this weapon/player - no try/catch needed since every
+    // key here already succeeded once.
+    private static StatValueEntry[] ReadKnownStats(EStat[] validStats, System.Func<EStat, float> getValue)
+    {
+        var result = new List<StatValueEntry>(validStats.Length);
+        foreach (var stat in validStats)
+        {
+            float value = getValue(stat);
+            if (value == 0f) continue;
             result.Add(new StatValueEntry { stat = stat.ToString(), value = value });
         }
         return result.ToArray();
