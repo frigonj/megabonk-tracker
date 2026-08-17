@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Megabonk Tracker - Run {{ run.id if run else "" }}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <nav class="topnav">
+    <span class="brand">Megabonk Tracker</span>
+    <a href="/">Live</a>
+    <a href="/history" class="active">History</a>
+  </nav>
+  <main>
+    <a class="back-link" href="/history">&larr; Back to history</a>
+
+    {% if run %}
+    <div class="card">
+      <div class="stat-row">
+        <div class="stat"><div class="label">Run</div><div class="value">#{{ run.id }}</div></div>
+        <div class="stat"><div class="label">Outcome</div><div class="value">{{ run.outcome or "-" }}</div></div>
+        <div class="stat"><div class="label">Duration</div><div class="value">{{ run.duration_seconds }}s</div></div>
+        <div class="stat"><div class="label">Total Damage</div><div class="value">{{ "%.0f"|format(run.total_damage or 0) }}</div></div>
+        <div class="stat"><div class="label">Avg DPS</div><div class="value">{{ "%.1f"|format(run.avg_dps or 0) }}</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Damage Over Time</h3>
+      <p style="color:var(--text-dim); font-size:0.85rem;">Curve shape shows whether damage output scaled linearly or accelerated (exponential-looking) over the run.</p>
+      <div id="damage-chart"></div>
+    </div>
+
+    <div class="card">
+      <h3>Weapon Stats (base &rarr; end of run)</h3>
+      {% if final_weapon_stats %}
+      {% for w in final_weapon_stats %}
+      <h4 style="margin-bottom:0.4rem;">{{ w.weapon }} <span class="pill">Lv{{ w.level }}</span></h4>
+      {% set base_map = {} %}
+      {% for s in w.base_stats %}{% if base_map.update({s.stat: s.value}) %}{% endif %}{% endfor %}
+      {% set current_map = {} %}
+      {% for s in w.current_stats %}{% if current_map.update({s.stat: s.value}) %}{% endif %}{% endfor %}
+      <table style="margin-bottom:1.25rem;">
+        <thead><tr><th>Stat</th><th>Base</th><th>Current</th><th>Change</th></tr></thead>
+        <tbody>
+          {% for stat in (base_map.keys() | list + current_map.keys() | list) | unique | sort %}
+          {% set base_val = base_map.get(stat, 0) %}
+          {% set cur_val = current_map.get(stat, 0) %}
+          <tr>
+            <td>{{ stat }}</td>
+            <td>{{ "%.2f"|format(base_val) }}</td>
+            <td>{{ "%.2f"|format(cur_val) }}</td>
+            <td class="{{ 'delta-up' if cur_val > base_val else ('delta-down' if cur_val < base_val else '') }}">
+              {{ "%+.2f"|format(cur_val - base_val) }}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% endfor %}
+      {% else %}
+      <div class="empty-state">No weapon stat snapshots recorded for this run.</div>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      <h3>Picks &amp; Stat Changes</h3>
+      {% if picks %}
+      <table>
+        <thead><tr><th>#</th><th>Name</th><th>Level</th><th>Rarity</th><th>Stat Changes</th></tr></thead>
+        <tbody>
+          {% for p in picks %}
+          <tr>
+            <td>{{ p.seq + 1 }}</td>
+            <td>{{ p.name }}</td>
+            <td>{{ p.level }}</td>
+            <td><span class="pill rarity-{{ p.rarity }}">{{ p.rarity }}</span></td>
+            <td>
+              {% for c in p.stat_changes %}
+              <span class="pill">{{ c.stat }} {{ "%+.2f"|format(c.amount) }}{{ "x" if c.modify_type == "Multiplication" else "" }}</span>
+              {% endfor %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="empty-state">No picks recorded for this run.</div>
+      {% endif %}
+    </div>
+    {% else %}
+    <div class="card"><div class="empty-state">Run not found.</div></div>
+    {% endif %}
+  </main>
+
+  <script type="module">
+    import { renderDamageChart } from "/static/chart.js";
+    const points = {{ history_points|tojson }};
+    renderDamageChart(document.getElementById("damage-chart"), points);
+  </script>
+</body>
+</html>

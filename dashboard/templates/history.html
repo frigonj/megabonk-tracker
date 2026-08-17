@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Megabonk Tracker - History</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <nav class="topnav">
+    <span class="brand">Megabonk Tracker</span>
+    <a href="/">Live</a>
+    <a href="/history" class="active">History</a>
+  </nav>
+  <main>
+    <div class="card">
+      <h3>Runs ({{ runs|length }})</h3>
+      {% if runs %}
+      <table>
+        <thead><tr><th>#</th><th>Started</th><th>Outcome</th><th>Duration</th><th>Total Damage</th><th>Avg DPS</th></tr></thead>
+        <tbody>
+          {% for r in runs %}
+          <tr>
+            <td><a href="/history/{{ r.id }}">#{{ r.id }}</a></td>
+            <td>{{ r.started_at }}</td>
+            <td>{{ r.outcome or "-" }}</td>
+            <td>{{ r.duration_seconds }}s</td>
+            <td>{{ "%.0f"|format(r.total_damage or 0) }}</td>
+            <td>{{ "%.1f"|format(r.avg_dps or 0) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="empty-state">No completed runs yet. Finish a run for it to show up here.</div>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      <h3>Per-Item Stats</h3>
+      {% if per_item %}
+      <table>
+        <thead><tr><th>Item</th><th>Pick Rate</th><th>Avg DPS When Present</th><th>Avg Damage Contribution</th></tr></thead>
+        <tbody>
+          {% for i in per_item %}
+          <tr>
+            <td>{{ i.name }}</td>
+            <td>{{ "%.0f"|format(i.pick_rate * 100) }}%</td>
+            <td>{{ "%.1f"|format(i.avg_dps_when_present or 0) }}</td>
+            <td>{{ "%.0f"|format(i.avg_damage_contribution or 0) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="empty-state">Not enough data yet.</div>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      <h3>Best Pairs (2-item combinations)</h3>
+      <p style="color:var(--text-dim); font-size:0.85rem;">Sample size = number of runs that combo appeared in. Low sample sizes are not statistically reliable.</p>
+      {% if pairs %}
+      <table>
+        <thead><tr><th>Combo</th><th>Sample Size</th><th>Avg DPS</th><th>vs Baseline</th></tr></thead>
+        <tbody>
+          {% for c in pairs %}
+          <tr>
+            <td>{{ c.combo|join(" + ") }}</td>
+            <td>{{ c.sample_size }}</td>
+            <td>{{ "%.1f"|format(c.avg_dps) }}</td>
+            <td class="{{ 'delta-up' if c.delta_pct >= 0 else 'delta-down' }}">{{ "%+.1f"|format(c.delta_pct) }}%</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="empty-state">Need at least 2 runs sharing an item pair to compute this.</div>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      <h3>Best Triples (3-item combinations)</h3>
+      {% if triples %}
+      <table>
+        <thead><tr><th>Combo</th><th>Sample Size</th><th>Avg DPS</th><th>vs Baseline</th></tr></thead>
+        <tbody>
+          {% for c in triples %}
+          <tr>
+            <td>{{ c.combo|join(" + ") }}</td>
+            <td>{{ c.sample_size }}</td>
+            <td>{{ "%.1f"|format(c.avg_dps) }}</td>
+            <td class="{{ 'delta-up' if c.delta_pct >= 0 else 'delta-down' }}">{{ "%+.1f"|format(c.delta_pct) }}%</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="empty-state">Need at least 2 runs sharing an item triple to compute this.</div>
+      {% endif %}
+    </div>
+  </main>
+</body>
+</html>

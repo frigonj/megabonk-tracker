@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Megabonk Tracker</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <nav class="topnav">
+    <span class="brand">Megabonk Tracker</span>
+    <a href="/" class="active">Live</a>
+    <a href="/history">History</a>
+  </nav>
+  <main>
+    <div class="card">
+      <div class="stat-row">
+        <div class="stat">
+          <div class="label">Status</div>
+          <div class="value" id="status">Waiting…</div>
+        </div>
+        <div class="stat">
+          <div class="label">Total Damage</div>
+          <div class="value" id="total-damage">0</div>
+        </div>
+        <div class="stat">
+          <div class="label">Character</div>
+          <div class="value" id="character">-</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Damage Over Time</h3>
+      <div id="damage-chart"></div>
+    </div>
+
+    <div class="card">
+      <h3>Damage by Source</h3>
+      <table id="damage-table">
+        <thead><tr><th>Source</th><th>Level</th><th>Damage</th><th>Share</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="empty-state" id="damage-empty">No damage recorded yet this run.</div>
+    </div>
+
+    <div class="card">
+      <h3>Picks This Run</h3>
+      <div class="pick-log" id="pick-log"></div>
+      <div class="empty-state" id="picks-empty">No upgrades picked yet.</div>
+    </div>
+
+    <div class="card">
+      <h3>Weapon Stats</h3>
+      <div id="weapon-stats"></div>
+      <div class="empty-state" id="weapon-stats-empty">No weapon stats yet.</div>
+    </div>
+  </main>
+
+  <script type="module">
+    import { renderDamageChart } from "/static/chart.js";
+
+    const statusEl = document.getElementById("status");
+    const totalDamageEl = document.getElementById("total-damage");
+    const characterEl = document.getElementById("character");
+    const damageBody = document.querySelector("#damage-table tbody");
+    const damageEmpty = document.getElementById("damage-empty");
+    const pickLog = document.getElementById("pick-log");
+    const picksEmpty = document.getElementById("picks-empty");
+    const weaponStatsEl = document.getElementById("weapon-stats");
+    const weaponStatsEmpty = document.getElementById("weapon-stats-empty");
+
+    function fmt(n) {
+      return Math.round(n).toLocaleString();
+    }
+
+    function render(state) {
+      statusEl.textContent = state.run_active ? "Run in progress" : "No active run";
+      totalDamageEl.textContent = fmt(state.total_damage);
+      characterEl.textContent = state.character || "-";
+
+      renderDamageChart(document.getElementById("damage-chart"), state.damage_history || []);
+
+      damageBody.innerHTML = "";
+      damageEmpty.style.display = state.sources.length ? "none" : "block";
+      for (const s of state.sources) {
+        const share = state.total_damage > 0 ? (s.damage / state.total_damage * 100).toFixed(1) : "0.0";
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td>${s.source}</td><td>${s.level}</td><td>${fmt(s.damage)}</td><td>${share}%</td>`;
+        damageBody.appendChild(tr);
+      }
+
+      pickLog.innerHTML = "";
+      picksEmpty.style.display = state.picks.length ? "none" : "block";
+      for (const p of [...state.picks].reverse()) {
+        const div = document.createElement("div");
+        div.className = "pick-log-item";
+        const changes = (p.stat_changes || [])
+          .map((c) => `<span class="pill">${c.stat} ${c.amount >= 0 ? "+" : ""}${c.amount.toFixed(2)}${c.modifyType === "Multiplication" ? "x" : ""}</span>`)
+          .join(" ");
+        div.innerHTML = `<span class="pill rarity-${p.rarity}">${p.rarity}</span> ${p.name} <span style="color:var(--text-dim)">Lv${p.level}</span> ${changes}`;
+        pickLog.appendChild(div);
+      }
+
+      const weaponStats = state.weapon_stats || [];
+      weaponStatsEl.innerHTML = "";
+      weaponStatsEmpty.style.display = weaponStats.length ? "none" : "block";
+      for (const w of weaponStats) {
+        const h4 = document.createElement("h4");
+        h4.style.marginBottom = "0.4rem";
+        h4.innerHTML = `${w.weapon} <span class="pill">Lv${w.level}</span>`;
+        weaponStatsEl.appendChild(h4);
+
+        const table = document.createElement("table");
+        table.style.marginBottom = "1rem";
+        const thead = document.createElement("thead");
+        thead.innerHTML = "<tr><th>Stat</th><th>Base</th><th>Current</th><th>Change</th></tr>";
+        table.appendChild(thead);
+        const tbody = document.createElement("tbody");
+        const baseMap = Object.fromEntries((w.baseStats || []).map((s) => [s.stat, s.value]));
+        const curMap = Object.fromEntries((w.currentStats || []).map((s) => [s.stat, s.value]));
+        const allStats = [...new Set([...Object.keys(baseMap), ...Object.keys(curMap)])].sort();
+        for (const stat of allStats) {
+          const b = baseMap[stat] || 0;
+          const c = curMap[stat] || 0;
+          const delta = c - b;
+          const deltaClass = delta > 0 ? "delta-up" : delta < 0 ? "delta-down" : "";
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td>${stat}</td><td>${b.toFixed(2)}</td><td>${c.toFixed(2)}</td><td class="${deltaClass}">${delta >= 0 ? "+" : ""}${delta.toFixed(2)}</td>`;
+          tbody.appendChild(tr);
+        }
+        table.appendChild(tbody);
+        weaponStatsEl.appendChild(table);
+      }
+    }
+
+    function connect() {
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      const ws = new WebSocket(`${proto}//${location.host}/ws`);
+      ws.onmessage = (ev) => render(JSON.parse(ev.data));
+      ws.onclose = () => setTimeout(connect, 2000);
+    }
+    connect();
+  </script>
+</body>
+</html>

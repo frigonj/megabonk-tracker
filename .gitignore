@@ -1,0 +1,15 @@
+# Python (dashboard)
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.db
+server_out.log
+server_err.log
+
+# .NET (plugin)
+bin/
+obj/
+
+# Local settings
+.claude/settings.json
