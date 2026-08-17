@@ -48,6 +48,7 @@ public static class Patch_GameManager_StartPlaying
     {
         EventSink.ResetForNewRun();
         DamagePoller.RunActive = true;
+        DamagePoller.IsPaused = false;
         DamagePoller.ActiveGameManager = __instance;
         DamagePoller.KnownWeaponBaseStats.Clear();
         DamagePoller.KnownPlayerBaseStats = null;
@@ -150,9 +151,32 @@ public static class Patch_EffectStat_ApplyEffect
     }
 }
 
+[HarmonyPatch(typeof(PauseUi), "Pause")]
+public static class Patch_PauseUi_Pause
+{
+    private static void Postfix()
+    {
+        if (DamagePoller.IsPaused) return;
+        DamagePoller.IsPaused = true;
+        EventSink.Emit(new GamePausedEvent());
+    }
+}
+
+[HarmonyPatch(typeof(PauseUi), "Resume")]
+public static class Patch_PauseUi_Resume
+{
+    private static void Postfix()
+    {
+        if (!DamagePoller.IsPaused) return;
+        DamagePoller.IsPaused = false;
+        EventSink.Emit(new GameResumedEvent());
+    }
+}
+
 public class DamagePoller : MonoBehaviour
 {
     public static bool RunActive;
+    public static bool IsPaused;
     public static GameManager ActiveGameManager;
 
     // Base stats are fixed per weapon type and only need to be captured once, the first time
@@ -167,7 +191,7 @@ public class DamagePoller : MonoBehaviour
 
     private void Update()
     {
-        if (!RunActive) return;
+        if (!RunActive || IsPaused) return;
         _timer += Time.deltaTime;
         if (_timer < PollIntervalSeconds) return;
         _timer = 0f;

@@ -27,7 +27,17 @@ class LiveState:
         self.player_stats: dict = {"base_stats": [], "current_stats": []}
         self.effects: list[dict] = []
         self.run_counters: dict = {}
+        self.is_paused: bool = False
+        self.paused_at: datetime | None = None
+        self.total_paused_seconds: float = 0.0
         self.clients: set[WebSocket] = set()
+
+    def elapsed_seconds(self, event_ts: datetime) -> float:
+        """Wall-clock time since run start, minus time spent paused - keeps the chart timeline
+        and duration/DPS figures reflecting actual play time, not real-world pause length."""
+        if self.run_started_at is None:
+            return 0.0
+        return (event_ts - self.run_started_at).total_seconds() - self.total_paused_seconds
 
     def to_dict(self) -> dict:
         return {
@@ -41,6 +51,7 @@ class LiveState:
             "player_stats": self.player_stats,
             "effects": self.effects,
             "run_counters": self.run_counters,
+            "is_paused": self.is_paused,
         }
 
 
@@ -75,6 +86,20 @@ def _handle_event(evt: dict) -> None:
         state.player_stats = {"base_stats": [], "current_stats": []}
         state.effects = []
         state.run_counters = {}
+        state.is_paused = False
+        state.paused_at = None
+        state.total_paused_seconds = 0.0
+
+    elif etype == "game_paused":
+        if not state.is_paused:
+            state.is_paused = True
+            state.paused_at = datetime.fromisoformat(evt["ts"])
+
+    elif etype == "game_resumed":
+        if state.is_paused and state.paused_at is not None:
+            state.total_paused_seconds += (datetime.fromisoformat(evt["ts"]) - state.paused_at).total_seconds()
+        state.is_paused = False
+        state.paused_at = None
 
     elif etype == "upgrade_picked":
         if state.run_id is None:
@@ -91,19 +116,19 @@ def _handle_event(evt: dict) -> None:
     elif etype == "weapon_stats_snapshot":
         state.weapon_stats = evt.get("weapons", [])
         if state.run_id is not None and state.run_started_at is not None:
-            t = (datetime.fromisoformat(evt["ts"]) - state.run_started_at).total_seconds()
+            t = state.elapsed_seconds(datetime.fromisoformat(evt["ts"]))
             db.add_weapon_stats_snapshot(state.run_id, t, state.weapon_stats)
 
     elif etype == "effect_applied":
         state.effects.append(evt)
         if state.run_id is not None and state.run_started_at is not None:
-            t = (datetime.fromisoformat(evt["ts"]) - state.run_started_at).total_seconds()
+            t = state.elapsed_seconds(datetime.fromisoformat(evt["ts"]))
             db.add_effect_applied(state.run_id, t, evt)
 
     elif etype == "player_stats_snapshot":
         state.player_stats = {"base_stats": evt.get("baseStats", []), "current_stats": evt.get("currentStats", [])}
         if state.run_id is not None and state.run_started_at is not None:
-            t = (datetime.fromisoformat(evt["ts"]) - state.run_started_at).total_seconds()
+            t = state.elapsed_seconds(datetime.fromisoformat(evt["ts"]))
             db.add_player_stats_snapshot(state.run_id, t, evt.get("baseStats", []), evt.get("currentStats", []))
 
     elif etype == "run_counters_snapshot":
@@ -113,14 +138,14 @@ def _handle_event(evt: dict) -> None:
             "skips_used": evt.get("skipsUsed"),
         }
         if state.run_id is not None and state.run_started_at is not None:
-            t = (datetime.fromisoformat(evt["ts"]) - state.run_started_at).total_seconds()
+            t = state.elapsed_seconds(datetime.fromisoformat(evt["ts"]))
             db.add_run_counters_snapshot(state.run_id, t, evt)
 
     elif etype == "damage_snapshot":
         state.total_damage = evt.get("totalDamage", 0.0)
         state.sources = evt.get("sources", [])
         if state.run_id is not None and state.run_started_at is not None:
-            t = (datetime.fromisoformat(evt["ts"]) - state.run_started_at).total_seconds()
+            t = state.elapsed_seconds(datetime.fromisoformat(evt["ts"]))
             point = {"t": t, "total_damage": state.total_damage, "sources": state.sources}
             state.damage_history.append(point)
             db.add_damage_snapshot(state.run_id, t, state.total_damage, state.sources)
@@ -130,11 +155,13 @@ def _handle_event(evt: dict) -> None:
             return
         duration = 0
         if state.run_started_at is not None:
-            ended_at = datetime.fromisoformat(evt["ts"])
-            duration = int((ended_at - state.run_started_at).total_seconds())
+            duration = int(state.elapsed_seconds(datetime.fromisoformat(evt["ts"])))
         db.end_run(state.run_id, evt.get("outcome", ""), duration, state.total_damage, state.sources)
         state.run_id = None
         state.run_started_at = None
+        state.is_paused = False
+        state.paused_at = None
+        state.total_paused_seconds = 0.0
 
 
 async def tail_events_loop() -> None:

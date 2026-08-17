@@ -123,7 +123,7 @@
     }
 
     function render(state) {
-      statusEl.textContent = state.run_active ? "Run in progress" : "No active run";
+      statusEl.textContent = state.is_paused ? "Paused" : (state.run_active ? "Run in progress" : "No active run");
       totalDamageEl.textContent = fmt(state.total_damage);
       characterEl.textContent = state.character || "-";
 

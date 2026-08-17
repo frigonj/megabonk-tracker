@@ -100,3 +100,13 @@ public sealed class RunCountersSnapshotEvent : TrackerEvent
     public int refreshesUsed;
     public int skipsUsed;
 }
+
+public sealed class GamePausedEvent : TrackerEvent
+{
+    public GamePausedEvent() => type = "game_paused";
+}
+
+public sealed class GameResumedEvent : TrackerEvent
+{
+    public GameResumedEvent() => type = "game_resumed";
+}

@@ -46,6 +46,10 @@ public static class SimpleJson
             Field("gold", e.gold), Field("characterLevel", e.characterLevel),
             Field("banishesUsed", e.banishesUsed), Field("refreshesUsed", e.refreshesUsed), Field("skipsUsed", e.skipsUsed)),
 
+        GamePausedEvent e => Obj(Field("type", e.type), Field("ts", e.ts)),
+
+        GameResumedEvent e => Obj(Field("type", e.type), Field("ts", e.ts)),
+
         _ => "{}"
     };
 
