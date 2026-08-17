@@ -46,13 +46,20 @@ public static class Patch_GameManager_StartPlaying
 {
     private static void Postfix(GameManager __instance)
     {
-        EventSink.ResetForNewRun();
-        DamagePoller.RunActive = true;
-        DamagePoller.IsPaused = false;
-        DamagePoller.ActiveGameManager = __instance;
-        DamagePoller.KnownWeaponBaseStats.Clear();
-        DamagePoller.KnownPlayerBaseStats = null;
-        EventSink.Emit(new RunStartedEvent());
+        try
+        {
+            EventSink.ResetForNewRun();
+            DamagePoller.RunActive = true;
+            DamagePoller.IsPaused = false;
+            DamagePoller.ActiveGameManager = __instance;
+            DamagePoller.KnownWeaponBaseStats.Clear();
+            DamagePoller.KnownPlayerBaseStats = null;
+            EventSink.Emit(new RunStartedEvent());
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log?.LogError($"Patch_GameManager_StartPlaying failed: {ex}");
+        }
     }
 }
 
@@ -62,7 +69,16 @@ public static class Patch_GameManager_OnDied
     private static void Postfix(GameManager __instance)
     {
         DamagePoller.RunActive = false;
-        DamagePoller.EmitSnapshot();
+        try
+        {
+            DamagePoller.EmitSnapshot();
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log?.LogError($"DamagePoller.EmitSnapshot failed during OnDied: {ex}");
+        }
+        // RunEndedEvent must fire regardless of whether the final snapshot succeeded, so the
+        // dashboard doesn't leave the run stuck showing "in progress" forever.
         EventSink.Emit(new RunEndedEvent { outcome = "died" });
     }
 }
@@ -72,30 +88,42 @@ public static class Patch_UpgradePicker_SelectUpgrade
 {
     private static void Postfix(IUpgradable upgradable, List<StatModifier> upgradeOffer, UpgradeButton btn, ERarity rarity)
     {
-        if (upgradable == null) return;
-
-        var statChanges = new List<StatChangeEntry>();
-        if (upgradeOffer != null)
+        try
         {
-            foreach (var mod in upgradeOffer)
+            if (upgradable == null) return;
+
+            var statChanges = new List<StatChangeEntry>();
+            if (upgradeOffer != null)
             {
-                if (mod == null) continue;
-                statChanges.Add(new StatChangeEntry
+                // Index rather than foreach - the Il2Cpp List<T> enumerator has thrown
+                // IndexOutOfRangeException here in practice; indexed access is more robust
+                // against interop collections whose native backing may be in flux.
+                int count = upgradeOffer.Count;
+                for (int i = 0; i < count; i++)
                 {
-                    stat = mod.stat.ToString(),
-                    modifyType = mod.modifyType.ToString(),
-                    amount = mod.modification
-                });
+                    var mod = upgradeOffer[i];
+                    if (mod == null) continue;
+                    statChanges.Add(new StatChangeEntry
+                    {
+                        stat = mod.stat.ToString(),
+                        modifyType = mod.modifyType.ToString(),
+                        amount = mod.modification
+                    });
+                }
             }
-        }
 
-        EventSink.Emit(new UpgradePickedEvent
+            EventSink.Emit(new UpgradePickedEvent
+            {
+                name = upgradable.GetName(),
+                level = upgradable.GetLevel(),
+                rarity = rarity.ToString(),
+                statChanges = statChanges.ToArray()
+            });
+        }
+        catch (System.Exception ex)
         {
-            name = upgradable.GetName(),
-            level = upgradable.GetLevel(),
-            rarity = rarity.ToString(),
-            statChanges = statChanges.ToArray()
-        });
+            Plugin.Log?.LogError($"Patch_UpgradePicker_SelectUpgrade failed: {ex}");
+        }
     }
 }
 
@@ -132,22 +160,31 @@ public static class Patch_EffectStat_ApplyEffect
 {
     private static void Postfix(EffectStat __instance)
     {
-        if (__instance == null) return;
-        var mod = __instance.statModifier;
-
-        EventSink.Emit(new EffectAppliedEvent
+        try
         {
-            source = EffectSource.Current,
-            effectType = __instance.effectType.ToString(),
-            stat = mod != null ? mod.stat.ToString() : "",
-            modifyType = mod != null ? mod.modifyType.ToString() : "",
-            amount = mod != null ? mod.modification : __instance.value,
-            permanent = __instance.permanent,
-            duration = __instance.duration,
-            isPositiveEffect = __instance.isPositiveEffect
-        });
+            if (__instance == null) return;
+            var mod = __instance.statModifier;
 
-        EffectSource.Current = "unknown";
+            EventSink.Emit(new EffectAppliedEvent
+            {
+                source = EffectSource.Current,
+                effectType = __instance.effectType.ToString(),
+                stat = mod != null ? mod.stat.ToString() : "",
+                modifyType = mod != null ? mod.modifyType.ToString() : "",
+                amount = mod != null ? mod.modification : __instance.value,
+                permanent = __instance.permanent,
+                duration = __instance.duration,
+                isPositiveEffect = __instance.isPositiveEffect
+            });
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log?.LogError($"Patch_EffectStat_ApplyEffect failed: {ex}");
+        }
+        finally
+        {
+            EffectSource.Current = "unknown";
+        }
     }
 }
 
@@ -195,10 +232,21 @@ public class DamagePoller : MonoBehaviour
         _timer += Time.deltaTime;
         if (_timer < PollIntervalSeconds) return;
         _timer = 0f;
-        EmitSnapshot();
-        EmitWeaponStatsSnapshot();
-        EmitPlayerStatsSnapshot();
-        EmitRunCountersSnapshot();
+
+        // An uncaught exception here kills every poll for the rest of the run (Unity swallows it,
+        // Update() never runs again on the affected object) - log and keep going rather than lose
+        // the whole event stream to one bad snapshot.
+        try
+        {
+            EmitSnapshot();
+            EmitWeaponStatsSnapshot();
+            EmitPlayerStatsSnapshot();
+            EmitRunCountersSnapshot();
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log?.LogError($"DamagePoller tick failed: {ex}");
+        }
     }
 
     public static void EmitSnapshot()
@@ -286,7 +334,18 @@ public class DamagePoller : MonoBehaviour
         var result = new List<StatValueEntry>();
         foreach (var stat in AllStats)
         {
-            float value = getValue(stat);
+            float value;
+            try
+            {
+                // Not every EStat is defined for every weapon/player stat dictionary - the game's own
+                // GetBaseStat/GetStat throw KeyNotFoundException for stats that simply aren't tracked
+                // there (e.g. a weapon has no MaxHealth entry), rather than returning a default.
+                value = getValue(stat);
+            }
+            catch (System.Exception)
+            {
+                continue;
+            }
             if (value == 0f) continue; // skip stats this weapon doesn't use
             result.Add(new StatValueEntry { stat = stat.ToString(), value = value });
         }
