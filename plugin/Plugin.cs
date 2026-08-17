@@ -88,41 +88,35 @@ public static class Patch_GameManager_OnDied
 [HarmonyPatch(typeof(UpgradePicker), "SelectUpgrade")]
 public static class Patch_UpgradePicker_SelectUpgrade
 {
-    // Prefix, not Postfix: upgradeOffer's IndexOutOfRangeException (both via foreach and via
-    // indexed get_Item) pointed at the native-backed list being mutated out from under us. The
-    // most likely cause is SelectUpgrade's own body consuming/clearing the offer list as part of
-    // applying the pick - reading it before the original method runs, while it's still in its
-    // pre-mutation state, avoids the race instead of trying to read it faster/more defensively
-    // after the fact.
+    // Prefix, not Postfix: the upgradeOffer *parameter* threw IndexOutOfRangeException (both via
+    // foreach and via indexed get_Item) when read in a Postfix, and live testing showed it reads
+    // as empty when read in a Prefix - suggesting the parameter itself isn't the reliable copy of
+    // the offer. UpgradeButton has its own `upgradeOffer` field (confirmed in decompiled source),
+    // which is what the button's own click handler almost certainly populates and forwards from -
+    // read that instead of the method parameter.
     private static void Prefix(IUpgradable upgradable, List<StatModifier> upgradeOffer, UpgradeButton btn, ERarity rarity)
     {
         try
         {
             if (upgradable == null) return;
 
-            var statChanges = new List<StatChangeEntry>();
-            if (upgradeOffer != null)
+            // btn.upgradeOffer is Il2CppSystem.Collections.Generic.List<StatModifier> - a different
+            // type than the upgradeOffer parameter (System.Collections.Generic.List<StatModifier> as
+            // Harmony binds it here) despite the same name, so they can't be unified with `??`.
+            // ReadStatModifiers takes count+indexer as delegates so both list types share one loop.
+            List<StatChangeEntry> statChanges;
+            var btnOffer = btn?.upgradeOffer;
+            if (btnOffer != null)
             {
-                int count = upgradeOffer.Count;
-                for (int i = 0; i < count; i++)
-                {
-                    StatModifier mod;
-                    try
-                    {
-                        mod = upgradeOffer[i];
-                    }
-                    catch (System.Exception)
-                    {
-                        break; // list shrank under us - stop rather than keep indexing past its new end
-                    }
-                    if (mod == null) continue;
-                    statChanges.Add(new StatChangeEntry
-                    {
-                        stat = mod.stat.ToString(),
-                        modifyType = mod.modifyType.ToString(),
-                        amount = mod.modification
-                    });
-                }
+                statChanges = ReadStatModifiers(() => btnOffer.Count, i => btnOffer[i]);
+            }
+            else if (upgradeOffer != null)
+            {
+                statChanges = ReadStatModifiers(() => upgradeOffer.Count, i => upgradeOffer[i]);
+            }
+            else
+            {
+                statChanges = new List<StatChangeEntry>();
             }
 
             EventSink.Emit(new UpgradePickedEvent
@@ -137,6 +131,32 @@ public static class Patch_UpgradePicker_SelectUpgrade
         {
             Plugin.Log?.LogError($"Patch_UpgradePicker_SelectUpgrade failed: {ex}");
         }
+    }
+
+    private static List<StatChangeEntry> ReadStatModifiers(System.Func<int> getCount, System.Func<int, StatModifier> getItem)
+    {
+        var statChanges = new List<StatChangeEntry>();
+        int count = getCount();
+        for (int i = 0; i < count; i++)
+        {
+            StatModifier mod;
+            try
+            {
+                mod = getItem(i);
+            }
+            catch (System.Exception)
+            {
+                break; // list shrank under us - stop rather than keep indexing past its new end
+            }
+            if (mod == null) continue;
+            statChanges.Add(new StatChangeEntry
+            {
+                stat = mod.stat.ToString(),
+                modifyType = mod.modifyType.ToString(),
+                amount = mod.modification
+            });
+        }
+        return statChanges;
     }
 }
 
