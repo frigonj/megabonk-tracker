@@ -50,6 +50,11 @@ public static class SimpleJson
 
         GameResumedEvent e => Obj(Field("type", e.type), Field("ts", e.ts)),
 
+        PerformanceSnapshotEvent e => Obj(
+            Field("type", e.type), Field("ts", e.ts),
+            Field("avgFps", e.avgFps), Field("minFps", e.minFps),
+            Field("frameCount", e.frameCount), Field("spikeCount", e.spikeCount)),
+
         _ => "{}"
     };
 

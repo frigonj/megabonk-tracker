@@ -110,3 +110,12 @@ public sealed class GameResumedEvent : TrackerEvent
 {
     public GameResumedEvent() => type = "game_resumed";
 }
+
+public sealed class PerformanceSnapshotEvent : TrackerEvent
+{
+    public PerformanceSnapshotEvent() => type = "performance_snapshot";
+    public float avgFps;
+    public float minFps;
+    public int frameCount;
+    public int spikeCount; // frames whose deltaTime exceeded the spike threshold this window
+}

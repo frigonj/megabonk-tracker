@@ -54,7 +54,8 @@ public static class Patch_GameManager_StartPlaying
             DamagePoller.ActiveGameManager = __instance;
             DamagePoller.KnownWeaponBaseStats.Clear();
             DamagePoller.KnownPlayerBaseStats = null;
-            EventSink.Emit(new RunStartedEvent());
+            var character = __instance.GetPlayerInventory()?.characterData?.eCharacter.ToString() ?? "";
+            EventSink.Emit(new RunStartedEvent { character = character });
         }
         catch (System.Exception ex)
         {
@@ -271,8 +272,49 @@ public class DamagePoller : MonoBehaviour
     private const float PollIntervalSeconds = 1f;
     private float _timer;
 
+    // Frame-time sampling to correlate reported stutter against actual FPS data, independent of
+    // the stat-lookup exception path above - a stutter with no exceptions logged means the cause
+    // is elsewhere (GC pressure from JSON/file writes, WebSocket broadcast cost, etc). A spike is
+    // any single frame's deltaTime implying under 30fps; sampled unconditionally so it also covers
+    // menus/level-up screens, not just active runs.
+    private const float SpikeFpsThreshold = 30f;
+    private float _perfWindowTimer;
+    private float _perfMinFps = float.MaxValue;
+    private float _perfFpsSum;
+    private int _perfFrameCount;
+    private int _perfSpikeCount;
+
     private void Update()
     {
+        float dt = Time.deltaTime;
+        if (dt > 0f)
+        {
+            float fps = 1f / dt;
+            _perfFpsSum += fps;
+            _perfFrameCount++;
+            if (fps < _perfMinFps) _perfMinFps = fps;
+            if (fps < SpikeFpsThreshold) _perfSpikeCount++;
+        }
+        _perfWindowTimer += dt;
+        if (_perfWindowTimer >= PollIntervalSeconds)
+        {
+            if (RunActive && _perfFrameCount > 0)
+            {
+                EventSink.Emit(new PerformanceSnapshotEvent
+                {
+                    avgFps = _perfFpsSum / _perfFrameCount,
+                    minFps = _perfMinFps,
+                    frameCount = _perfFrameCount,
+                    spikeCount = _perfSpikeCount
+                });
+            }
+            _perfWindowTimer = 0f;
+            _perfFpsSum = 0f;
+            _perfMinFps = float.MaxValue;
+            _perfFrameCount = 0;
+            _perfSpikeCount = 0;
+        }
+
         if (!RunActive || IsPaused) return;
         _timer += Time.deltaTime;
         _exceptionLogTimer += Time.deltaTime;
