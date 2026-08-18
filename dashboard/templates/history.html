@@ -15,8 +15,24 @@
     <div class="card">
       <h3>Runs ({{ runs|length }})</h3>
       {% if runs %}
+      {% macro sort_link(col, label) %}
+      {% set next_dir = "asc" if (sort == col and dir == "desc") else "desc" %}
+      <a href="/history?sort={{ col }}&dir={{ next_dir }}" style="color:inherit; text-decoration:none;">
+        {{ label }}{% if sort == col %} {{ "&uarr;"|safe if dir == "asc" else "&darr;"|safe }}{% endif %}
+      </a>
+      {% endmacro %}
       <table>
-        <thead><tr><th>#</th><th>Started</th><th>Outcome</th><th>Duration</th><th>Total Damage</th><th>Avg DPS</th></tr></thead>
+        <thead>
+          <tr>
+            <th>{{ sort_link("id", "#") }}</th>
+            <th>{{ sort_link("started_at", "Started") }}</th>
+            <th>Outcome</th>
+            <th>{{ sort_link("duration_seconds", "Duration") }}</th>
+            <th>{{ sort_link("max_character_level", "Char Level") }}</th>
+            <th>{{ sort_link("total_damage", "Total Damage") }}</th>
+            <th>{{ sort_link("avg_dps", "Avg DPS") }}</th>
+          </tr>
+        </thead>
         <tbody>
           {% for r in runs %}
           <tr>
@@ -24,6 +40,7 @@
             <td>{{ r.started_at }}</td>
             <td>{{ r.outcome or "-" }}</td>
             <td>{{ r.duration_seconds }}s</td>
+            <td>{{ r.max_character_level or "-" }}</td>
             <td>{{ "%.0f"|format(r.total_damage or 0) }}</td>
             <td>{{ "%.1f"|format(r.avg_dps or 0) }}</td>
           </tr>
