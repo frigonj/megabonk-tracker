@@ -27,6 +27,8 @@ class LiveState:
         self.player_stats: dict = {"base_stats": [], "current_stats": []}
         self.effects: list[dict] = []
         self.run_counters: dict = {}
+        self.performance_history: list[dict] = []
+        self.latest_performance: dict = {}
         self.is_paused: bool = False
         self.paused_at: datetime | None = None
         self.total_paused_seconds: float = 0.0
@@ -51,6 +53,8 @@ class LiveState:
             "player_stats": self.player_stats,
             "effects": self.effects,
             "run_counters": self.run_counters,
+            "performance_history": self.performance_history,
+            "latest_performance": self.latest_performance,
             "is_paused": self.is_paused,
         }
 
@@ -86,6 +90,8 @@ def _handle_event(evt: dict) -> None:
         state.player_stats = {"base_stats": [], "current_stats": []}
         state.effects = []
         state.run_counters = {}
+        state.performance_history = []
+        state.latest_performance = {}
         state.is_paused = False
         state.paused_at = None
         state.total_paused_seconds = 0.0
@@ -149,6 +155,18 @@ def _handle_event(evt: dict) -> None:
             point = {"t": t, "total_damage": state.total_damage, "sources": state.sources}
             state.damage_history.append(point)
             db.add_damage_snapshot(state.run_id, t, state.total_damage, state.sources)
+
+    elif etype == "performance_snapshot":
+        point = {
+            "avg_fps": evt.get("avgFps", 0.0), "min_fps": evt.get("minFps", 0.0),
+            "frame_count": evt.get("frameCount", 0), "spike_count": evt.get("spikeCount", 0),
+        }
+        state.latest_performance = point
+        if state.run_id is not None and state.run_started_at is not None:
+            t = state.elapsed_seconds(datetime.fromisoformat(evt["ts"]))
+            point_with_t = {"t": t, **point}
+            state.performance_history.append(point_with_t)
+            db.add_performance_snapshot(state.run_id, t, point["avg_fps"], point["min_fps"], point["frame_count"], point["spike_count"])
 
     elif etype == "run_ended":
         if state.run_id is None:

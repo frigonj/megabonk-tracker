@@ -1,8 +1,19 @@
-// Minimal SVG line chart for damage-over-time: total damage + top per-source lines.
-// Palette: validated categorical set from the dataviz skill (dark surface #1a1d24).
-const SERIES_COLORS = ["#3987e5", "#d95926", "#199e70", "#c98500"];
+// Minimal SVG line chart for damage-over-time: total damage + one line per damage source.
+// Palette: validated 8-hue categorical set from the dataviz skill (dark surface #1a1a19) -
+// validated via scripts/validate_palette.js, all adjacent pairs pass CVD/normal-vision/contrast
+// gates. Every source gets its own line (no "Other" fold) per explicit user request; past 8
+// sources in a single run, colors repeat with an alternating dash pattern so no two lines are
+// visually identical even without using the hover tooltip to disambiguate.
+const SERIES_COLORS = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"];
 const TOTAL_COLOR = "#e8e9ec"; // primary ink - the total line is not a "series", it's the headline
-const MAX_DIRECT_SERIES = 4;
+
+// The game's own damage-attribution fallback key (confirmed via decompiled Assembly-CSharp.dll:
+// Assets.Scripts.Actors.DamageContainer.unknownDamageSource, typo included) is relabeled for
+// display only - matching/lookup logic elsewhere in this file still keys on the raw "Unkown"
+// string from the event stream, so this must only be applied at render time.
+export function displaySourceName(source) {
+    return source === "Unkown" ? "Unattributed" : source;
+}
 
 function niceMax(v) {
   if (v <= 0) return 1;
@@ -12,7 +23,21 @@ function niceMax(v) {
   return step * pow;
 }
 
-function topSourceNames(points, limit) {
+// The axis max tracks the latest point directly (plus a small margin) rather than snapping to
+// coarse fixed steps - fixed steps kept the line from visually compressing every second, but also
+// left the plotted line ending well short of the right edge for most of a run's duration (e.g. a
+// 650s run would sit at ~54% width until crossing the 1200s step). A tiny fixed margin still means
+// existing points barely move between redraws (no visible per-second scroll/compression), while
+// the line consistently reaches close to the plot's right edge.
+const TIME_AXIS_MARGIN_SECONDS = 5;
+
+function niceTimeMax(t) {
+  return Math.max(t + TIME_AXIS_MARGIN_SECONDS, 10);
+}
+
+// Every distinct source across the run, ordered by peak damage (highest-impact first) so the
+// legend and color assignment are stable and meaningful, not insertion-order-dependent.
+function allSourceNames(points) {
     const maxBySource = new Map();
     for (const p of points) {
         for (const s of p.sources) {
@@ -21,7 +46,6 @@ function topSourceNames(points, limit) {
     }
     return [...maxBySource.entries()]
         .sort((a, b) => b[1] - a[1])
-        .slice(0, limit)
         .map(([name]) => name);
 }
 
@@ -41,12 +65,10 @@ export function renderDamageChart(container, points, opts = {}) {
     const plotW = width - padding.left - padding.right;
     const plotH = height - padding.top - padding.bottom;
 
-    const tMax = points[points.length - 1].t || 1;
+    const tMax = niceTimeMax(points[points.length - 1].t || 0);
     const totalMax = niceMax(Math.max(...points.map((p) => p.total_damage)));
 
-    const seriesNames = topSourceNames(points, MAX_DIRECT_SERIES);
-    const otherNames = new Set();
-    for (const p of points) for (const s of p.sources) if (!seriesNames.includes(s.source)) otherNames.add(s.source);
+    const seriesNames = allSourceNames(points);
 
     const x = (t) => padding.left + (t / tMax) * plotW;
     const y = (v) => padding.top + plotH - (v / totalMax) * plotH;
@@ -86,32 +108,37 @@ export function renderDamageChart(container, points, opts = {}) {
         svg.appendChild(label);
     }
 
-    // Per-source lines (top N direct-labeled series)
+    // X-axis (time) ticks - 5 even divisions of the current tMax.
+    const timeTickCount = 5;
+    for (let i = 0; i <= timeTickCount; i++) {
+        const t = (tMax / timeTickCount) * i;
+        const tx = x(t);
+        const label = document.createElementNS(svgNS, "text");
+        label.setAttribute("x", tx);
+        label.setAttribute("y", height - padding.bottom + 18);
+        label.setAttribute("text-anchor", i === timeTickCount ? "end" : i === 0 ? "start" : "middle");
+        label.setAttribute("fill", "#898781");
+        label.setAttribute("font-size", "11");
+        label.textContent = `${Math.round(t)}s`;
+        svg.appendChild(label);
+    }
+
+    // Per-source lines - every source gets its own line, no aggregation. Colors cycle through
+    // the validated 8-hue set; a second pass through the palette (9th+ source) switches to a
+    // dashed stroke so no two lines are ever visually identical, even beyond the validated set.
     seriesNames.forEach((name, i) => {
+        const colorIndex = i % SERIES_COLORS.length;
+        const cyclePass = Math.floor(i / SERIES_COLORS.length);
         const path = document.createElementNS(svgNS, "path");
         path.setAttribute("d", lineFor((p) => p.sources.find((s) => s.source === name)?.damage || 0));
         path.setAttribute("fill", "none");
-        path.setAttribute("stroke", SERIES_COLORS[i]);
+        path.setAttribute("stroke", SERIES_COLORS[colorIndex]);
         path.setAttribute("stroke-width", "2");
         path.setAttribute("stroke-linejoin", "round");
         path.setAttribute("stroke-linecap", "round");
+        if (cyclePass > 0) path.setAttribute("stroke-dasharray", "6,3");
         svg.appendChild(path);
     });
-
-    // "Other" line, if any sources fell outside the top N
-    if (otherNames.size > 0) {
-        const path = document.createElementNS(svgNS, "path");
-        path.setAttribute(
-            "d",
-            lineFor((p) => p.sources.filter((s) => otherNames.has(s.source)).reduce((sum, s) => sum + s.damage, 0))
-        );
-        path.setAttribute("fill", "none");
-        path.setAttribute("stroke", "#9aa0ab");
-        path.setAttribute("stroke-width", "2");
-        path.setAttribute("stroke-dasharray", "1,0");
-        path.setAttribute("opacity", "0.6");
-        svg.appendChild(path);
-    }
 
     // Total line (headline series - drawn last so it stays on top)
     const totalPath = document.createElementNS(svgNS, "path");
@@ -160,7 +187,7 @@ export function renderDamageChart(container, points, opts = {}) {
         const lines = [`<strong>${Math.round(nearest.t)}s</strong>`, `Total: ${Math.round(nearest.total_damage).toLocaleString()}`];
         for (const name of seriesNames) {
             const s = nearest.sources.find((s) => s.source === name);
-            if (s) lines.push(`${name}: ${Math.round(s.damage).toLocaleString()}`);
+            if (s) lines.push(`${displaySourceName(name)}: ${Math.round(s.damage).toLocaleString()}`);
         }
         tooltip.innerHTML = lines.join("<br>");
         tooltip.style.display = "block";
@@ -185,7 +212,6 @@ export function renderDamageChart(container, points, opts = {}) {
         legend.appendChild(item);
     };
     addLegendItem(TOTAL_COLOR, "Total");
-    seriesNames.forEach((name, i) => addLegendItem(SERIES_COLORS[i], name));
-    if (otherNames.size > 0) addLegendItem("#9aa0ab", "Other");
+    seriesNames.forEach((name, i) => addLegendItem(SERIES_COLORS[i % SERIES_COLORS.length], displaySourceName(name)));
     container.appendChild(legend);
 }

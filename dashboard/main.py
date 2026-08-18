@@ -48,15 +48,15 @@ async def ws_endpoint(websocket: WebSocket):
 
 
 @app.get("/history", response_class=HTMLResponse)
-async def history(request: Request):
-    runs = db.list_runs()
+async def history(request: Request, sort: str = "id", dir: str = "desc"):
+    runs = db.list_runs(sort_by=sort, sort_dir=dir)
     per_item = db.per_item_stats()
     pairs = db.combo_stats(combo_size=2)
     triples = db.combo_stats(combo_size=3)
     return templates.TemplateResponse(
         request,
         "history.html",
-        {"runs": runs, "per_item": per_item, "pairs": pairs, "triples": triples},
+        {"runs": runs, "per_item": per_item, "pairs": pairs, "triples": triples, "sort": sort, "dir": dir},
     )
 
 
@@ -69,6 +69,7 @@ async def run_detail(request: Request, run_id: int):
     effects = db.get_effects_applied(run_id)
     final_player_stats = db.get_final_player_stats(run_id)
     final_run_counters = db.get_final_run_counters(run_id)
+    performance_history = db.get_performance_history(run_id)
     return templates.TemplateResponse(
         request,
         "run_detail.html",
@@ -80,6 +81,7 @@ async def run_detail(request: Request, run_id: int):
             "effects": effects,
             "final_player_stats": final_player_stats,
             "final_run_counters": final_run_counters,
+            "performance_history": performance_history,
         },
     )
 

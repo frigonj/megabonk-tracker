@@ -34,6 +34,10 @@
           <div class="label">Char Level</div>
           <div class="value" id="char-level">0</div>
         </div>
+        <div class="stat">
+          <div class="label">FPS (avg / min)</div>
+          <div class="value" id="fps">-</div>
+        </div>
       </div>
     </div>
 
@@ -51,16 +55,18 @@
       <div class="empty-state" id="damage-empty">No damage recorded yet this run.</div>
     </div>
 
-    <div class="card">
-      <h3>Shrine / Gravestone / Encounter Effects</h3>
-      <div class="pick-log" id="effects-log"></div>
-      <div class="empty-state" id="effects-empty">No effects applied yet.</div>
-    </div>
+    <div class="two-col">
+      <div class="card">
+        <h3>Shrine / Gravestone / Encounter Effects</h3>
+        <div class="pick-log" id="effects-log"></div>
+        <div class="empty-state" id="effects-empty">No effects applied yet.</div>
+      </div>
 
-    <div class="card">
-      <h3>Picks This Run</h3>
-      <div class="pick-log" id="pick-log"></div>
-      <div class="empty-state" id="picks-empty">No upgrades picked yet.</div>
+      <div class="card">
+        <h3>Picks This Run</h3>
+        <div class="pick-log" id="pick-log"></div>
+        <div class="empty-state" id="picks-empty">No upgrades picked yet.</div>
+      </div>
     </div>
 
     <div class="card">
@@ -77,13 +83,14 @@
   </main>
 
   <script type="module">
-    import { renderDamageChart } from "/static/chart.js";
+    import { renderDamageChart, displaySourceName } from "/static/chart.js";
 
     const statusEl = document.getElementById("status");
     const totalDamageEl = document.getElementById("total-damage");
     const characterEl = document.getElementById("character");
     const goldEl = document.getElementById("gold");
     const charLevelEl = document.getElementById("char-level");
+    const fpsEl = document.getElementById("fps");
     const damageBody = document.querySelector("#damage-table tbody");
     const damageEmpty = document.getElementById("damage-empty");
     const pickLog = document.getElementById("pick-log");
@@ -134,7 +141,7 @@
       for (const s of state.sources) {
         const share = state.total_damage > 0 ? (s.damage / state.total_damage * 100).toFixed(1) : "0.0";
         const tr = document.createElement("tr");
-        tr.innerHTML = `<td>${s.source}</td><td>${s.level}</td><td>${fmt(s.damage)}</td><td>${share}%</td>`;
+        tr.innerHTML = `<td>${displaySourceName(s.source)}</td><td>${s.level}</td><td>${fmt(s.damage)}</td><td>${share}%</td>`;
         damageBody.appendChild(tr);
       }
 
@@ -170,6 +177,16 @@
       const counters = state.run_counters || {};
       goldEl.textContent = fmt(counters.gold || 0);
       charLevelEl.textContent = counters.character_level || 0;
+
+      const perf = state.latest_performance || {};
+      if (perf.avg_fps != null) {
+        const spikeNote = perf.spike_count ? ` (${perf.spike_count} spikes)` : "";
+        fpsEl.textContent = `${perf.avg_fps.toFixed(0)} / ${perf.min_fps.toFixed(0)}${spikeNote}`;
+        fpsEl.style.color = perf.spike_count ? "var(--down)" : "";
+      } else {
+        fpsEl.textContent = "-";
+        fpsEl.style.color = "";
+      }
 
       const effects = state.effects || [];
       effectsLog.innerHTML = "";

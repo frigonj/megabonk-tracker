@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS runs (
     outcome TEXT,
     duration_seconds INTEGER,
     total_damage REAL,
-    avg_dps REAL
+    avg_dps REAL,
+    max_character_level INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS picks (
@@ -98,6 +99,16 @@ CREATE TABLE IF NOT EXISTS run_counters_history (
     skips_used INTEGER
 );
 
+CREATE TABLE IF NOT EXISTS performance_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL REFERENCES runs(id),
+    t_seconds REAL NOT NULL,
+    avg_fps REAL NOT NULL,
+    min_fps REAL NOT NULL,
+    frame_count INTEGER NOT NULL,
+    spike_count INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_picks_run ON picks(run_id);
 CREATE INDEX IF NOT EXISTS idx_damage_run ON damage_by_source(run_id);
 CREATE INDEX IF NOT EXISTS idx_history_run ON damage_history(run_id);
@@ -106,6 +117,7 @@ CREATE INDEX IF NOT EXISTS idx_weapon_stats_run ON weapon_stats_history(run_id);
 CREATE INDEX IF NOT EXISTS idx_effects_run ON effects_applied(run_id);
 CREATE INDEX IF NOT EXISTS idx_player_stats_run ON player_stats_history(run_id);
 CREATE INDEX IF NOT EXISTS idx_run_counters_run ON run_counters_history(run_id);
+CREATE INDEX IF NOT EXISTS idx_performance_run ON performance_history(run_id);
 """
 
 
@@ -116,9 +128,25 @@ def get_conn() -> sqlite3.Connection:
     return conn
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Schema evolution for DBs created before a column existed - SCHEMA's CREATE TABLE IF NOT
+    EXISTS only applies to brand-new databases, so an already-existing runs table needs an
+    explicit ALTER TABLE plus a one-time backfill from the data that already implies the value."""
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
+    if "max_character_level" not in columns:
+        conn.execute("ALTER TABLE runs ADD COLUMN max_character_level INTEGER")
+        conn.execute(
+            """UPDATE runs SET max_character_level = (
+                   SELECT MAX(character_level) FROM run_counters_history
+                   WHERE run_counters_history.run_id = runs.id
+               )"""
+        )
+
+
 def init_db() -> None:
     with get_conn() as conn:
         conn.executescript(SCHEMA)
+        _migrate(conn)
 
 
 def now_iso() -> str:
@@ -295,6 +323,25 @@ def add_damage_snapshot(run_id: int, t_seconds: float, total_damage: float, sour
         )
 
 
+def add_performance_snapshot(run_id: int, t_seconds: float, avg_fps: float, min_fps: float, frame_count: int, spike_count: int) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO performance_history (run_id, t_seconds, avg_fps, min_fps, frame_count, spike_count)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (run_id, t_seconds, avg_fps, min_fps, frame_count, spike_count),
+        )
+
+
+def get_performance_history(run_id: int) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT t_seconds, avg_fps, min_fps, frame_count, spike_count
+               FROM performance_history WHERE run_id = ? ORDER BY t_seconds""",
+            (run_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 def get_damage_history(run_id: int) -> list[dict]:
     with get_conn() as conn:
         rows = conn.execute(
@@ -312,8 +359,12 @@ def end_run(run_id: int, outcome: str, duration_seconds: int, total_damage: floa
     with get_conn() as conn:
         conn.execute(
             """UPDATE runs SET ended_at = ?, outcome = ?, duration_seconds = ?,
-               total_damage = ?, avg_dps = ? WHERE id = ?""",
-            (now_iso(), outcome, duration_seconds, total_damage, avg_dps, run_id),
+               total_damage = ?, avg_dps = ?,
+               max_character_level = (
+                   SELECT MAX(character_level) FROM run_counters_history WHERE run_id = ?
+               )
+               WHERE id = ?""",
+            (now_iso(), outcome, duration_seconds, total_damage, avg_dps, run_id, run_id),
         )
         conn.executemany(
             "INSERT INTO damage_by_source (run_id, source_name, total_damage, level) VALUES (?, ?, ?, ?)",
@@ -331,6 +382,7 @@ class RunSummary:
     duration_seconds: int | None
     total_damage: float | None
     avg_dps: float | None
+    max_character_level: int | None
 
 
 def get_run(run_id: int) -> RunSummary | None:
@@ -339,10 +391,24 @@ def get_run(run_id: int) -> RunSummary | None:
         return RunSummary(**dict(row)) if row else None
 
 
-def list_runs(limit: int = 50) -> list[RunSummary]:
+# Whitelisted sort columns for list_runs - never interpolate the sort_by param directly into SQL.
+RUN_SORT_COLUMNS = {
+    "id": "id",
+    "started_at": "started_at",
+    "duration_seconds": "duration_seconds",
+    "total_damage": "total_damage",
+    "avg_dps": "avg_dps",
+    "max_character_level": "max_character_level",
+}
+
+
+def list_runs(limit: int = 50, sort_by: str = "id", sort_dir: str = "desc") -> list[RunSummary]:
+    column = RUN_SORT_COLUMNS.get(sort_by, "id")
+    direction = "ASC" if sort_dir == "asc" else "DESC"
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT * FROM runs WHERE ended_at IS NOT NULL ORDER BY id DESC LIMIT ?",
+            f"SELECT * FROM runs WHERE ended_at IS NOT NULL "
+            f"ORDER BY {column} {direction} NULLS LAST, id DESC LIMIT ?",
             (limit,),
         ).fetchall()
         return [RunSummary(**dict(r)) for r in rows]
