@@ -4,9 +4,11 @@ using Assets.Scripts._Data;
 using Assets.Scripts.Inventory__Items__Pickups;
 using Assets.Scripts.Inventory__Items__Pickups.Stats;
 using Assets.Scripts.Inventory__Items__Pickups.Weapons;
+using Assets.Scripts.Managers;
 using Assets.Scripts.Menu.Shop;
 using Assets.Scripts.Saves___Serialization.Progression.Stats;
 using Assets.Scripts.UI.InGame.Rewards;
+using Inventory__Items__Pickups.Xp_and_Levels;
 using BepInEx;
 using BepInEx.Logging;
 using BepInEx.Unity.IL2CPP;
@@ -124,6 +126,7 @@ public static class Patch_UpgradePicker_SelectUpgrade
             {
                 name = upgradable.GetName(),
                 level = upgradable.GetLevel(),
+                maxLevel = upgradable.GetMaxLevel(),
                 rarity = rarity.ToString(),
                 statChanges = statChanges.ToArray()
             });
@@ -189,6 +192,53 @@ public static class Patch_EncounterOffer_ApplyEffects
     private static void Prefix() => EffectSource.Current = "EncounterOffer";
 }
 
+// Moai and Shady Guy grant items directly rather than routing through EffectStat.ApplyEffect (see
+// ItemGrantedEvent) - same stash-before/read-in-postfix pattern as EffectSource above, but tracked
+// separately since UpgradePicker.SelectItem is a single shared method for both sources (and
+// possibly others, e.g. chests) with no back-reference to which one triggered it.
+public static class ItemSource
+{
+    public static string Current = "unknown";
+}
+
+[HarmonyPatch(typeof(InteractableShrineMoai), "Interact")]
+public static class Patch_ShrineMoai_Interact
+{
+    private static void Prefix() => ItemSource.Current = "Moai";
+}
+
+[HarmonyPatch(typeof(InteractableShadyGuy), "Interact")]
+public static class Patch_ShadyGuy_Interact
+{
+    private static void Prefix() => ItemSource.Current = "ShadyGuy";
+}
+
+[HarmonyPatch(typeof(UpgradePicker), "SelectItem")]
+public static class Patch_UpgradePicker_SelectItem
+{
+    private static void Postfix(ItemData itemData)
+    {
+        try
+        {
+            if (itemData == null) return;
+            EventSink.Emit(new ItemGrantedEvent
+            {
+                source = ItemSource.Current,
+                item = itemData.eItem.ToString(),
+                rarity = itemData.rarity.ToString()
+            });
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log?.LogError($"Patch_UpgradePicker_SelectItem failed: {ex}");
+        }
+        finally
+        {
+            ItemSource.Current = "unknown";
+        }
+    }
+}
+
 [HarmonyPatch(typeof(EffectStat), "ApplyEffect")]
 public static class Patch_EffectStat_ApplyEffect
 {
@@ -241,6 +291,30 @@ public static class Patch_PauseUi_Resume
         if (!DamagePoller.IsPaused) return;
         DamagePoller.IsPaused = false;
         EventSink.Emit(new GameResumedEvent());
+    }
+}
+
+// Diagnostic for #gap-011 - user reported the pause/resume mismatch seems to happen around
+// losing window focus (alt-tab, clicking away), not the in-game pause menu itself. Logs every
+// focus change plus IsPaused at that moment so the two can be correlated directly from the event
+// stream instead of inferred from timestamps. Remove once #gap-011 is resolved.
+[HarmonyPatch(typeof(AlwaysUi), "OnApplicationFocus")]
+public static class Patch_AlwaysUi_OnApplicationFocus
+{
+    private static void Postfix(bool hasFocus)
+    {
+        try
+        {
+            EventSink.Emit(new ApplicationFocusChangedEvent
+            {
+                hasFocus = hasFocus,
+                isPausedAtTimeOfFocusChange = DamagePoller.IsPaused
+            });
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log?.LogError($"Patch_AlwaysUi_OnApplicationFocus failed: {ex}");
+        }
     }
 }
 
@@ -339,11 +413,70 @@ public class DamagePoller : MonoBehaviour
             EmitRunCountersSnapshot();
             EmitWeaponStatsSnapshot();
             EmitPlayerStatsSnapshot();
+            EmitEnemyHealthSnapshot();
+            EmitProgressionLimitsSnapshot();
         }
         catch (System.Exception ex)
         {
             Plugin.Log?.LogError($"DamagePoller tick failed: {ex}");
         }
+    }
+
+    public static void EmitProgressionLimitsSnapshot()
+    {
+        var weaponInv = ActiveGameManager?.GetPlayerInventory()?.weaponInventory;
+        var tomeInv = ActiveGameManager?.GetPlayerInventory()?.tomeInventory;
+        var enemyMgr = EnemyManager.Instance;
+        if (weaponInv == null || tomeInv == null || enemyMgr == null) return;
+
+        EventSink.Emit(new ProgressionLimitsSnapshotEvent
+        {
+            maxWeaponLevelBase = InventoryUtility.MAX_WEAPON_LEVEL_BASE,
+            maxTomeLevelBase = InventoryUtility.MAX_TOME_LEVEL_BASE,
+            weaponMaxLevel = InventoryUtility.GetWeaponMaxLevel(),
+            tomeMaxLevel = InventoryUtility.GetTomeMaxLevel(),
+            numExtraWeaponLevels = InventoryUtility.GetNumExtraWeaponLevels(),
+            numExtraTomeLevels = InventoryUtility.GetNumExtraTomeLevels(),
+            numAvailableWeaponSlots = InventoryUtility.GetNumAvailableWeaponSlots(),
+            numMaxWeaponSlots = InventoryUtility.GetNumMaxWeaponSlots(),
+            numAvailableTomeSlots = InventoryUtility.GetNumAvailableTomeSlots(),
+            numMaxTomeSlots = InventoryUtility.GetNumMaxTomeSlots(),
+            canUnlockWeapons = InventoryUtility.CanUnlockWeapons(),
+            canUnlockTomes = InventoryUtility.CanUnlockTomes(),
+            weaponsMaxed = weaponInv.isMaxed,
+            tomesMaxed = tomeInv.isMaxed,
+            numMaxEnemies = enemyMgr.GetNumMaxEnemies(),
+            hasMaxEnemies = enemyMgr.HasMaxEnemies(),
+            isFinalSwarm = enemyMgr.IsFinalSwarm()
+        });
+    }
+
+    // For comparing DPS against what's currently standing between the player and survival - a
+    // build whose DPS isn't keeping pace with total enemy HP present is losing ground even before
+    // it dies. hp is clamped to 0 in the sum: dead-but-not-yet-despawned enemies can transiently
+    // read negative (their Despawn coroutine runs a frame or more after the killing blow), which
+    // would otherwise understate the total.
+    public static void EmitEnemyHealthSnapshot()
+    {
+        var enemies = EnemyManager.Instance?.enemies;
+        if (enemies == null) return;
+
+        float totalHp = 0f;
+        int count = 0;
+        foreach (var kv in enemies)
+        {
+            var enemy = kv.Value;
+            if (enemy == null) continue;
+            totalHp += System.Math.Max(enemy.hp, 0f);
+            count++;
+        }
+
+        EventSink.Emit(new EnemyHealthSnapshotEvent
+        {
+            totalHp = totalHp,
+            avgHp = count > 0 ? totalHp / count : 0f,
+            enemyCount = count
+        });
     }
 
     public static void EmitSnapshot()
@@ -438,7 +571,8 @@ public class DamagePoller : MonoBehaviour
         EventSink.Emit(new PlayerStatsSnapshotEvent
         {
             baseStats = KnownPlayerBaseStats,
-            currentStats = currentStats
+            currentStats = currentStats,
+            maxXpMultiplier = PlayerXp.maxXpMultiplier
         });
     }
 

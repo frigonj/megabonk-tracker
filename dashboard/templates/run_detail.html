@@ -14,7 +14,7 @@
   <main>
     <a class="back-link" href="/history">&larr; Back to history</a>
 
-    {% macro base_vs_current_table(base_stats, current_stats) %}
+    {% macro base_vs_current_table(base_stats, current_stats, max_xp_multiplier=none) %}
     {% set base_map = {} %}
     {% for s in base_stats %}{% if base_map.update({s.stat: s.value}) %}{% endif %}{% endfor %}
     {% set current_map = {} %}
@@ -28,7 +28,12 @@
         <tr>
           <td>{{ stat }}</td>
           <td>{{ "%.2f"|format(base_val) }}</td>
-          <td>{{ "%.2f"|format(cur_val) }}</td>
+          <td>
+            {{ "%.2f"|format(cur_val) }}
+            {% if stat == "XpIncreaseMultiplier" and max_xp_multiplier is not none and cur_val > max_xp_multiplier %}
+            <span style="color:var(--down)" title="Effective XP gain is capped at {{ '%.1f'|format(max_xp_multiplier) }}x - further investment was wasted">(capped at {{ '%.1f'|format(max_xp_multiplier) }}x)</span>
+            {% endif %}
+          </td>
           <td class="{{ 'delta-up' if cur_val > base_val else ('delta-down' if cur_val < base_val else '') }}">
             {{ "%+.2f"|format(cur_val - base_val) }}
           </td>
@@ -46,6 +51,12 @@
         <div class="stat"><div class="label">Duration</div><div class="value">{{ run.duration_seconds }}s</div></div>
         <div class="stat"><div class="label">Total Damage</div><div class="value">{{ "%.0f"|format(run.total_damage or 0) }}</div></div>
         <div class="stat"><div class="label">Avg DPS</div><div class="value">{{ "%.1f"|format(run.avg_dps or 0) }}</div></div>
+        {% if avg_dps_to_hp_ratio is not none %}
+        <div class="stat"><div class="label">Avg DPS &divide; Enemy HP</div><div class="value">{{ "%.1f"|format(avg_dps_to_hp_ratio * 100) }}%/s</div></div>
+        {% endif %}
+        {% if final_swarm_started_at is not none %}
+        <div class="stat"><div class="label">Final Swarm</div><div class="value" style="color:var(--down)">{{ "%.0f"|format(final_swarm_started_at) }}s</div></div>
+        {% endif %}
         {% if final_run_counters %}
         <div class="stat"><div class="label">Gold</div><div class="value">{{ final_run_counters.gold or 0 }}</div></div>
         <div class="stat"><div class="label">Char Level</div><div class="value">{{ final_run_counters.character_level or 0 }}</div></div>
@@ -63,7 +74,7 @@
       <h3>Player Stats (base &rarr; end of run)</h3>
       <p style="color:var(--text-dim); font-size:0.85rem;">Player-wide stats (tomes, gravestones, shrines) as opposed to per-weapon stats below.</p>
       {% if final_player_stats %}
-      {{ base_vs_current_table(final_player_stats.base_stats, final_player_stats.current_stats) }}
+      {{ base_vs_current_table(final_player_stats.base_stats, final_player_stats.current_stats, final_player_stats.max_xp_multiplier) }}
       {% else %}
       <div class="empty-state">No player stat snapshots recorded for this run.</div>
       {% endif %}
@@ -107,6 +118,28 @@
     </div>
 
     <div class="card">
+      <h3>Items Granted (Moai / Shady Guy)</h3>
+      <p style="color:var(--text-dim); font-size:0.85rem;">These grant items directly rather than applying a stat effect, so they don't appear in the effects table above.</p>
+      {% if items_granted %}
+      <table>
+        <thead><tr><th>Time</th><th>Source</th><th>Item</th><th>Rarity</th></tr></thead>
+        <tbody>
+          {% for i in items_granted %}
+          <tr>
+            <td>{{ "%.0f"|format(i.t_seconds) }}s</td>
+            <td>{{ i.source }}</td>
+            <td>{{ i.item }}</td>
+            <td><span class="pill rarity-{{ i.rarity }}">{{ i.rarity }}</span></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="empty-state">No Moai/Shady Guy item grants recorded for this run.</div>
+      {% endif %}
+    </div>
+
+    <div class="card">
       <h3>Picks &amp; Stat Changes</h3>
       {% if picks %}
       <table>
@@ -116,7 +149,7 @@
           <tr>
             <td>{{ p.seq + 1 }}</td>
             <td>{{ p.name }}</td>
-            <td>{{ p.level }}</td>
+            <td>{{ p.level }}{{ "/" ~ p.max_level if p.max_level else "" }}</td>
             <td><span class="pill rarity-{{ p.rarity }}">{{ p.rarity }}</span></td>
             <td>
               {% for c in p.stat_changes %}

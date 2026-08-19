@@ -17,10 +17,30 @@ public static class SimpleJson
             Field("type", e.type), Field("ts", e.ts),
             Field("outcome", e.outcome), Field("durationSeconds", e.durationSeconds)),
 
+        ApplicationFocusChangedEvent e => Obj(
+            Field("type", e.type), Field("ts", e.ts),
+            Field("hasFocus", e.hasFocus), Field("isPausedAtTimeOfFocusChange", e.isPausedAtTimeOfFocusChange)),
+
         UpgradePickedEvent e => Obj(
             Field("type", e.type), Field("ts", e.ts),
-            Field("name", e.name), Field("level", e.level), Field("rarity", e.rarity),
+            Field("name", e.name), Field("level", e.level), Field("maxLevel", e.maxLevel), Field("rarity", e.rarity),
             FieldRaw("statChanges", SerializeArray(e.statChanges, SerializeStatChange))),
+
+        EnemyHealthSnapshotEvent e => Obj(
+            Field("type", e.type), Field("ts", e.ts),
+            Field("totalHp", e.totalHp), Field("avgHp", e.avgHp), Field("enemyCount", e.enemyCount)),
+
+        ProgressionLimitsSnapshotEvent e => Obj(
+            Field("type", e.type), Field("ts", e.ts),
+            Field("maxWeaponLevelBase", e.maxWeaponLevelBase), Field("maxTomeLevelBase", e.maxTomeLevelBase),
+            Field("weaponMaxLevel", e.weaponMaxLevel), Field("tomeMaxLevel", e.tomeMaxLevel),
+            Field("numExtraWeaponLevels", e.numExtraWeaponLevels), Field("numExtraTomeLevels", e.numExtraTomeLevels),
+            Field("numAvailableWeaponSlots", e.numAvailableWeaponSlots), Field("numMaxWeaponSlots", e.numMaxWeaponSlots),
+            Field("numAvailableTomeSlots", e.numAvailableTomeSlots), Field("numMaxTomeSlots", e.numMaxTomeSlots),
+            Field("canUnlockWeapons", e.canUnlockWeapons), Field("canUnlockTomes", e.canUnlockTomes),
+            Field("weaponsMaxed", e.weaponsMaxed), Field("tomesMaxed", e.tomesMaxed),
+            Field("numMaxEnemies", e.numMaxEnemies), Field("hasMaxEnemies", e.hasMaxEnemies),
+            Field("isFinalSwarm", e.isFinalSwarm)),
 
         DamageSnapshotEvent e => Obj(
             Field("type", e.type), Field("ts", e.ts),
@@ -29,6 +49,10 @@ public static class SimpleJson
         WeaponStatsSnapshotEvent e => Obj(
             Field("type", e.type), Field("ts", e.ts),
             FieldRaw("weapons", SerializeArray(e.weapons, SerializeWeaponStats))),
+
+        ItemGrantedEvent e => Obj(
+            Field("type", e.type), Field("ts", e.ts),
+            Field("source", e.source), Field("item", e.item), Field("rarity", e.rarity)),
 
         EffectAppliedEvent e => Obj(
             Field("type", e.type), Field("ts", e.ts),
@@ -39,7 +63,8 @@ public static class SimpleJson
         PlayerStatsSnapshotEvent e => Obj(
             Field("type", e.type), Field("ts", e.ts),
             FieldRaw("baseStats", SerializeArray(e.baseStats, SerializeStatValue)),
-            FieldRaw("currentStats", SerializeArray(e.currentStats, SerializeStatValue))),
+            FieldRaw("currentStats", SerializeArray(e.currentStats, SerializeStatValue)),
+            Field("maxXpMultiplier", e.maxXpMultiplier)),
 
         RunCountersSnapshotEvent e => Obj(
             Field("type", e.type), Field("ts", e.ts),

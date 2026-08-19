@@ -29,6 +29,12 @@ class LiveState:
         self.run_counters: dict = {}
         self.performance_history: list[dict] = []
         self.latest_performance: dict = {}
+        self.latest_dps: float = 0.0
+        self._last_damage_t: float | None = None
+        self.enemy_health: dict = {}
+        self.enemy_health_history: list[dict] = []
+        self.progression_limits: dict = {}
+        self.items_granted: list[dict] = []
         self.is_paused: bool = False
         self.paused_at: datetime | None = None
         self.total_paused_seconds: float = 0.0
@@ -55,6 +61,11 @@ class LiveState:
             "run_counters": self.run_counters,
             "performance_history": self.performance_history,
             "latest_performance": self.latest_performance,
+            "latest_dps": self.latest_dps,
+            "enemy_health": self.enemy_health,
+            "enemy_health_history": self.enemy_health_history,
+            "progression_limits": self.progression_limits,
+            "items_granted": self.items_granted,
             "is_paused": self.is_paused,
         }
 
@@ -92,6 +103,12 @@ def _handle_event(evt: dict) -> None:
         state.run_counters = {}
         state.performance_history = []
         state.latest_performance = {}
+        state.latest_dps = 0.0
+        state._last_damage_t = None
+        state.enemy_health = {}
+        state.enemy_health_history = []
+        state.progression_limits = {}
+        state.items_granted = []
         state.is_paused = False
         state.paused_at = None
         state.total_paused_seconds = 0.0
@@ -113,11 +130,11 @@ def _handle_event(evt: dict) -> None:
         seq = len(state.picks)
         stat_changes = evt.get("statChanges", [])
         pick = {
-            "name": evt["name"], "level": evt["level"], "rarity": evt["rarity"],
+            "name": evt["name"], "level": evt["level"], "max_level": evt.get("maxLevel"), "rarity": evt["rarity"],
             "ts": evt["ts"], "stat_changes": stat_changes,
         }
         state.picks.append(pick)
-        db.add_pick(state.run_id, seq, pick["name"], pick["level"], pick["rarity"], pick["ts"], stat_changes)
+        db.add_pick(state.run_id, seq, pick["name"], pick["level"], pick["max_level"], pick["rarity"], pick["ts"], stat_changes)
 
     elif etype == "weapon_stats_snapshot":
         state.weapon_stats = evt.get("weapons", [])
@@ -132,10 +149,16 @@ def _handle_event(evt: dict) -> None:
             db.add_effect_applied(state.run_id, t, evt)
 
     elif etype == "player_stats_snapshot":
-        state.player_stats = {"base_stats": evt.get("baseStats", []), "current_stats": evt.get("currentStats", [])}
+        max_xp_multiplier = evt.get("maxXpMultiplier")
+        state.player_stats = {
+            "base_stats": evt.get("baseStats", []), "current_stats": evt.get("currentStats", []),
+            "max_xp_multiplier": max_xp_multiplier,
+        }
         if state.run_id is not None and state.run_started_at is not None:
             t = state.elapsed_seconds(datetime.fromisoformat(evt["ts"]))
-            db.add_player_stats_snapshot(state.run_id, t, evt.get("baseStats", []), evt.get("currentStats", []))
+            db.add_player_stats_snapshot(
+                state.run_id, t, evt.get("baseStats", []), evt.get("currentStats", []), max_xp_multiplier
+            )
 
     elif etype == "run_counters_snapshot":
         state.run_counters = {
@@ -148,13 +171,69 @@ def _handle_event(evt: dict) -> None:
             db.add_run_counters_snapshot(state.run_id, t, evt)
 
     elif etype == "damage_snapshot":
-        state.total_damage = evt.get("totalDamage", 0.0)
-        state.sources = evt.get("sources", [])
+        new_total = evt.get("totalDamage", 0.0)
         if state.run_id is not None and state.run_started_at is not None:
             t = state.elapsed_seconds(datetime.fromisoformat(evt["ts"]))
-            point = {"t": t, "total_damage": state.total_damage, "sources": state.sources}
+            # Instantaneous DPS (delta since the last tick), not cumulative avg_dps - a build
+            # that's falling behind needs to show up quickly, not get smoothed out over the run.
+            dt = t - state._last_damage_t if state._last_damage_t is not None else 0.0
+            state.latest_dps = (new_total - state.total_damage) / dt if dt > 0 else 0.0
+            state._last_damage_t = t
+
+            point = {"t": t, "total_damage": new_total, "sources": evt.get("sources", [])}
             state.damage_history.append(point)
-            db.add_damage_snapshot(state.run_id, t, state.total_damage, state.sources)
+            db.add_damage_snapshot(state.run_id, t, new_total, evt.get("sources", []))
+        state.total_damage = new_total
+        state.sources = evt.get("sources", [])
+
+    elif etype == "enemy_health_snapshot":
+        total_hp = evt.get("totalHp", 0.0)
+        avg_hp = evt.get("avgHp", 0.0)
+        enemy_count = evt.get("enemyCount", 0)
+        state.enemy_health = {
+            "total_hp": total_hp, "avg_hp": avg_hp, "enemy_count": enemy_count,
+            "dps_to_hp_ratio": (state.latest_dps / total_hp) if total_hp > 0 else None,
+        }
+        if state.run_id is not None and state.run_started_at is not None:
+            t = state.elapsed_seconds(datetime.fromisoformat(evt["ts"]))
+            state.enemy_health_history.append({"t": t, **state.enemy_health})
+            db.add_enemy_health_snapshot(state.run_id, t, total_hp, avg_hp, enemy_count, state.latest_dps)
+
+    elif etype == "progression_limits_snapshot":
+        was_final_swarm = state.progression_limits.get("is_final_swarm", False)
+        state.progression_limits = {
+            "max_weapon_level_base": evt.get("maxWeaponLevelBase"),
+            "max_tome_level_base": evt.get("maxTomeLevelBase"),
+            "weapon_max_level": evt.get("weaponMaxLevel"),
+            "tome_max_level": evt.get("tomeMaxLevel"),
+            "num_extra_weapon_levels": evt.get("numExtraWeaponLevels"),
+            "num_extra_tome_levels": evt.get("numExtraTomeLevels"),
+            "num_available_weapon_slots": evt.get("numAvailableWeaponSlots"),
+            "num_max_weapon_slots": evt.get("numMaxWeaponSlots"),
+            "num_available_tome_slots": evt.get("numAvailableTomeSlots"),
+            "num_max_tome_slots": evt.get("numMaxTomeSlots"),
+            "can_unlock_weapons": evt.get("canUnlockWeapons"),
+            "can_unlock_tomes": evt.get("canUnlockTomes"),
+            "weapons_maxed": evt.get("weaponsMaxed"),
+            "tomes_maxed": evt.get("tomesMaxed"),
+            "num_max_enemies": evt.get("numMaxEnemies"),
+            "has_max_enemies": evt.get("hasMaxEnemies"),
+            "is_final_swarm": evt.get("isFinalSwarm", False),
+        }
+        # Only persist the moment Final Swarm actually starts - everything else in this event is
+        # cheap to keep live-only, re-derivable from the next tick, and would bloat the DB with
+        # near-duplicate rows every second for values that rarely change.
+        if not was_final_swarm and state.progression_limits["is_final_swarm"]:
+            if state.run_id is not None and state.run_started_at is not None:
+                t = state.elapsed_seconds(datetime.fromisoformat(evt["ts"]))
+                db.add_final_swarm_started(state.run_id, t)
+
+    elif etype == "item_granted":
+        item = {"source": evt.get("source", ""), "item": evt.get("item", ""), "rarity": evt.get("rarity", "")}
+        state.items_granted.append(item)
+        if state.run_id is not None and state.run_started_at is not None:
+            t = state.elapsed_seconds(datetime.fromisoformat(evt["ts"]))
+            db.add_item_granted(state.run_id, t, item["source"], item["item"], item["rarity"])
 
     elif etype == "performance_snapshot":
         point = {
@@ -187,7 +266,12 @@ async def tail_events_loop() -> None:
     if not LIVE_EVENTS_PATH.exists():
         LIVE_EVENTS_PATH.touch()
 
-    last_size = 0
+    # Start at the current end of the file, not byte 0 - the plugin's NDJSON file persists across
+    # dashboard restarts (it's only truncated on a fresh in-game run), so replaying from scratch on
+    # every dashboard restart would re-ingest whatever run was already durably saved to the DB last
+    # time, creating a fresh duplicate `runs` row each restart. Only genuinely new lines written
+    # after this process starts should ever be processed.
+    last_size = LIVE_EVENTS_PATH.stat().st_size
     while True:
         try:
             size = LIVE_EVENTS_PATH.stat().st_size

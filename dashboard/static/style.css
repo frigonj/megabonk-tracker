@@ -31,6 +31,18 @@ body {
 .topnav a { color: var(--text-dim); text-decoration: none; }
 .topnav a:hover, .topnav a.active { color: var(--text); }
 
+.reconnect-btn {
+  margin-left: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: 6px;
+  padding: 0.35rem 0.7rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.reconnect-btn:hover { color: var(--text); border-color: var(--text-dim); }
+
 main { padding: 1.5rem; max-width: 1000px; margin: 0 auto; }
 
 .card {

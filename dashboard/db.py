@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS picks (
     seq INTEGER NOT NULL,
     name TEXT NOT NULL,
     level INTEGER,
+    max_level INTEGER,
     rarity TEXT,
     ts TEXT
 );
@@ -85,7 +86,8 @@ CREATE TABLE IF NOT EXISTS player_stats_history (
     run_id INTEGER NOT NULL REFERENCES runs(id),
     t_seconds REAL NOT NULL,
     base_stats_json TEXT NOT NULL,
-    current_stats_json TEXT NOT NULL
+    current_stats_json TEXT NOT NULL,
+    max_xp_multiplier REAL
 );
 
 CREATE TABLE IF NOT EXISTS run_counters_history (
@@ -109,6 +111,31 @@ CREATE TABLE IF NOT EXISTS performance_history (
     spike_count INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS enemy_health_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL REFERENCES runs(id),
+    t_seconds REAL NOT NULL,
+    total_hp REAL NOT NULL,
+    avg_hp REAL NOT NULL,
+    enemy_count INTEGER NOT NULL,
+    dps REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS final_swarm_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL REFERENCES runs(id),
+    t_seconds REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS items_granted (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL REFERENCES runs(id),
+    t_seconds REAL NOT NULL,
+    source TEXT NOT NULL,
+    item TEXT NOT NULL,
+    rarity TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_picks_run ON picks(run_id);
 CREATE INDEX IF NOT EXISTS idx_damage_run ON damage_by_source(run_id);
 CREATE INDEX IF NOT EXISTS idx_history_run ON damage_history(run_id);
@@ -118,6 +145,9 @@ CREATE INDEX IF NOT EXISTS idx_effects_run ON effects_applied(run_id);
 CREATE INDEX IF NOT EXISTS idx_player_stats_run ON player_stats_history(run_id);
 CREATE INDEX IF NOT EXISTS idx_run_counters_run ON run_counters_history(run_id);
 CREATE INDEX IF NOT EXISTS idx_performance_run ON performance_history(run_id);
+CREATE INDEX IF NOT EXISTS idx_enemy_health_run ON enemy_health_history(run_id);
+CREATE INDEX IF NOT EXISTS idx_final_swarm_run ON final_swarm_events(run_id);
+CREATE INDEX IF NOT EXISTS idx_items_granted_run ON items_granted(run_id);
 """
 
 
@@ -142,6 +172,18 @@ def _migrate(conn: sqlite3.Connection) -> None:
                )"""
         )
 
+    pick_columns = {row["name"] for row in conn.execute("PRAGMA table_info(picks)")}
+    if "max_level" not in pick_columns:
+        # No backfill possible - the game's per-weapon/tome level cap was never captured before
+        # this column existed, so historical picks are left with max_level = NULL.
+        conn.execute("ALTER TABLE picks ADD COLUMN max_level INTEGER")
+
+    player_stats_columns = {row["name"] for row in conn.execute("PRAGMA table_info(player_stats_history)")}
+    if "max_xp_multiplier" not in player_stats_columns:
+        # No backfill possible - this is a game constant the plugin never captured before now,
+        # so historical rows are left with max_xp_multiplier = NULL.
+        conn.execute("ALTER TABLE player_stats_history ADD COLUMN max_xp_multiplier REAL")
+
 
 def init_db() -> None:
     with get_conn() as conn:
@@ -162,11 +204,14 @@ def start_run(character: str) -> int:
         return cur.lastrowid
 
 
-def add_pick(run_id: int, seq: int, name: str, level: int, rarity: str, ts: str, stat_changes: list[dict] | None = None) -> int:
+def add_pick(
+    run_id: int, seq: int, name: str, level: int, max_level: int | None, rarity: str, ts: str,
+    stat_changes: list[dict] | None = None,
+) -> int:
     with get_conn() as conn:
         cur = conn.execute(
-            "INSERT INTO picks (run_id, seq, name, level, rarity, ts) VALUES (?, ?, ?, ?, ?, ?)",
-            (run_id, seq, name, level, rarity, ts),
+            "INSERT INTO picks (run_id, seq, name, level, max_level, rarity, ts) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (run_id, seq, name, level, max_level, rarity, ts),
         )
         pick_id = cur.lastrowid
         if stat_changes:
@@ -213,24 +258,33 @@ def get_effects_applied(run_id: int) -> list[dict]:
         return [dict(r) for r in rows]
 
 
-def add_player_stats_snapshot(run_id: int, t_seconds: float, base_stats: list[dict], current_stats: list[dict]) -> None:
+def add_player_stats_snapshot(
+    run_id: int, t_seconds: float, base_stats: list[dict], current_stats: list[dict],
+    max_xp_multiplier: float | None = None,
+) -> None:
     with get_conn() as conn:
         conn.execute(
-            "INSERT INTO player_stats_history (run_id, t_seconds, base_stats_json, current_stats_json) VALUES (?, ?, ?, ?)",
-            (run_id, t_seconds, json.dumps(base_stats), json.dumps(current_stats)),
+            """INSERT INTO player_stats_history
+               (run_id, t_seconds, base_stats_json, current_stats_json, max_xp_multiplier)
+               VALUES (?, ?, ?, ?, ?)""",
+            (run_id, t_seconds, json.dumps(base_stats), json.dumps(current_stats), max_xp_multiplier),
         )
 
 
 def get_final_player_stats(run_id: int) -> dict | None:
     with get_conn() as conn:
         row = conn.execute(
-            """SELECT base_stats_json, current_stats_json FROM player_stats_history
+            """SELECT base_stats_json, current_stats_json, max_xp_multiplier FROM player_stats_history
                WHERE run_id = ? ORDER BY t_seconds DESC LIMIT 1""",
             (run_id,),
         ).fetchone()
         if not row:
             return None
-        return {"base_stats": json.loads(row["base_stats_json"]), "current_stats": json.loads(row["current_stats_json"])}
+        return {
+            "base_stats": json.loads(row["base_stats_json"]),
+            "current_stats": json.loads(row["current_stats_json"]),
+            "max_xp_multiplier": row["max_xp_multiplier"],
+        }
 
 
 def add_run_counters_snapshot(run_id: int, t_seconds: float, counters: dict) -> None:
@@ -302,7 +356,7 @@ def get_final_weapon_stats(run_id: int) -> list[dict]:
 def get_picks_with_stat_changes(run_id: int) -> list[dict]:
     with get_conn() as conn:
         picks = conn.execute(
-            "SELECT id, seq, name, level, rarity, ts FROM picks WHERE run_id = ? ORDER BY seq",
+            "SELECT id, seq, name, level, max_level, rarity, ts FROM picks WHERE run_id = ? ORDER BY seq",
             (run_id,),
         ).fetchall()
         result = []
@@ -342,6 +396,61 @@ def get_performance_history(run_id: int) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+def add_enemy_health_snapshot(
+    run_id: int, t_seconds: float, total_hp: float, avg_hp: float, enemy_count: int, dps: float
+) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO enemy_health_history (run_id, t_seconds, total_hp, avg_hp, enemy_count, dps)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (run_id, t_seconds, total_hp, avg_hp, enemy_count, dps),
+        )
+
+
+def get_enemy_health_history(run_id: int) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT t_seconds, total_hp, avg_hp, enemy_count, dps
+               FROM enemy_health_history WHERE run_id = ? ORDER BY t_seconds""",
+            (run_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def add_final_swarm_started(run_id: int, t_seconds: float) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO final_swarm_events (run_id, t_seconds) VALUES (?, ?)",
+            (run_id, t_seconds),
+        )
+
+
+def get_final_swarm_started(run_id: int) -> float | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT t_seconds FROM final_swarm_events WHERE run_id = ? ORDER BY t_seconds LIMIT 1",
+            (run_id,),
+        ).fetchone()
+        return row["t_seconds"] if row else None
+
+
+def add_item_granted(run_id: int, t_seconds: float, source: str, item: str, rarity: str) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO items_granted (run_id, t_seconds, source, item, rarity) VALUES (?, ?, ?, ?, ?)",
+            (run_id, t_seconds, source, item, rarity),
+        )
+
+
+def get_items_granted(run_id: int) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT t_seconds, source, item, rarity FROM items_granted WHERE run_id = ? ORDER BY t_seconds",
+            (run_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 def get_damage_history(run_id: int) -> list[dict]:
     with get_conn() as conn:
         rows = conn.execute(
@@ -354,17 +463,38 @@ def get_damage_history(run_id: int) -> list[dict]:
         ]
 
 
+# Runs that never reached this character level are considered too short to be useful for build
+# analysis (aborted attempts, disconnects, etc.) and are discarded entirely rather than kept as
+# low-value history - see gaps-done.md for the one-time cleanup that removed the existing backlog.
+MIN_CHARACTER_LEVEL_TO_KEEP = 50
+
+
 def end_run(run_id: int, outcome: str, duration_seconds: int, total_damage: float, sources: list[dict]) -> None:
     avg_dps = total_damage / duration_seconds if duration_seconds > 0 else 0.0
     with get_conn() as conn:
+        row = conn.execute(
+            "SELECT MAX(character_level) FROM run_counters_history WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        max_level = row[0] if row and row[0] is not None else 0
+
+        if max_level < MIN_CHARACTER_LEVEL_TO_KEEP:
+            conn.execute(
+                "DELETE FROM pick_stat_changes WHERE pick_id IN (SELECT id FROM picks WHERE run_id = ?)",
+                (run_id,),
+            )
+            for table in (
+                "picks", "damage_by_source", "damage_history", "weapon_stats_history",
+                "effects_applied", "player_stats_history", "run_counters_history",
+            ):
+                conn.execute(f"DELETE FROM {table} WHERE run_id = ?", (run_id,))
+            conn.execute("DELETE FROM runs WHERE id = ?", (run_id,))
+            return
+
         conn.execute(
             """UPDATE runs SET ended_at = ?, outcome = ?, duration_seconds = ?,
-               total_damage = ?, avg_dps = ?,
-               max_character_level = (
-                   SELECT MAX(character_level) FROM run_counters_history WHERE run_id = ?
-               )
+               total_damage = ?, avg_dps = ?, max_character_level = ?
                WHERE id = ?""",
-            (now_iso(), outcome, duration_seconds, total_damage, avg_dps, run_id, run_id),
+            (now_iso(), outcome, duration_seconds, total_damage, avg_dps, max_level, run_id),
         )
         conn.executemany(
             "INSERT INTO damage_by_source (run_id, source_name, total_damage, level) VALUES (?, ?, ?, ?)",

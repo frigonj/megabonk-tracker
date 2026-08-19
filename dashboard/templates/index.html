@@ -10,6 +10,7 @@
     <span class="brand">Megabonk Tracker</span>
     <a href="/" class="active">Live</a>
     <a href="/history">History</a>
+    <button id="reconnect-btn" class="reconnect-btn" title="Force the live view to reconnect if it looks stuck">⟳ Reconnect</button>
   </nav>
   <main>
     <div class="card">
@@ -37,6 +38,11 @@
         <div class="stat">
           <div class="label">FPS (avg / min)</div>
           <div class="value" id="fps">-</div>
+        </div>
+        <div class="stat">
+          <div class="label">DPS &divide; Enemy HP</div>
+          <div class="value" id="dps-hp-ratio">-</div>
+          <div style="color:var(--text-dim); font-size:0.75rem;" id="enemy-hp-detail"></div>
         </div>
       </div>
     </div>
@@ -80,6 +86,18 @@
       <div id="weapon-stats"></div>
       <div class="empty-state" id="weapon-stats-empty">No weapon stats yet.</div>
     </div>
+
+    <div class="card">
+      <h3>Items Granted (Moai / Shady Guy)</h3>
+      <div class="pick-log" id="items-granted-log"></div>
+      <div class="empty-state" id="items-granted-empty">No Moai/Shady Guy items granted yet.</div>
+    </div>
+
+    <div class="card">
+      <h3>Progression Limits</h3>
+      <div class="stat-row" id="progression-limits"></div>
+      <div class="empty-state" id="progression-limits-empty">No progression data yet.</div>
+    </div>
   </main>
 
   <script type="module">
@@ -101,12 +119,16 @@
     const playerStatsEmpty = document.getElementById("player-stats-empty");
     const effectsLog = document.getElementById("effects-log");
     const effectsEmpty = document.getElementById("effects-empty");
+    const itemsGrantedLog = document.getElementById("items-granted-log");
+    const itemsGrantedEmpty = document.getElementById("items-granted-empty");
+    const progressionLimitsEl = document.getElementById("progression-limits");
+    const progressionLimitsEmpty = document.getElementById("progression-limits-empty");
 
     function fmt(n) {
       return Math.round(n).toLocaleString();
     }
 
-    function renderStatTable(container, baseStats, currentStats) {
+    function renderStatTable(container, baseStats, currentStats, maxXpMultiplier) {
       const table = document.createElement("table");
       table.style.marginBottom = "1rem";
       const thead = document.createElement("thead");
@@ -122,7 +144,15 @@
         const delta = c - b;
         const deltaClass = delta > 0 ? "delta-up" : delta < 0 ? "delta-down" : "";
         const tr = document.createElement("tr");
-        tr.innerHTML = `<td>${stat}</td><td>${b.toFixed(2)}</td><td>${c.toFixed(2)}</td><td class="${deltaClass}">${delta >= 0 ? "+" : ""}${delta.toFixed(2)}</td>`;
+        // XpIncreaseMultiplier is the raw, uncapped stat sum - the game actually clamps effective
+        // XP gain to maxXpMultiplier (confirmed via decompile, see #gap-015). Past that point every
+        // further point invested (XP Tome, etc.) is wasted, so show it explicitly rather than let
+        // the raw number keep climbing and imply otherwise.
+        let currentCell = c.toFixed(2);
+        if (stat === "XpIncreaseMultiplier" && maxXpMultiplier != null && c > maxXpMultiplier) {
+          currentCell = `${c.toFixed(2)} <span style="color:var(--down)" title="Effective XP gain is capped at ${maxXpMultiplier.toFixed(1)}x - further investment is wasted">(capped at ${maxXpMultiplier.toFixed(1)}x)</span>`;
+        }
+        tr.innerHTML = `<td>${stat}</td><td>${b.toFixed(2)}</td><td>${currentCell}</td><td class="${deltaClass}">${delta >= 0 ? "+" : ""}${delta.toFixed(2)}</td>`;
         tbody.appendChild(tr);
       }
       table.appendChild(tbody);
@@ -153,7 +183,8 @@
         const changes = (p.stat_changes || [])
           .map((c) => `<span class="pill">${c.stat} ${c.amount >= 0 ? "+" : ""}${c.amount.toFixed(2)}${c.modifyType === "Multiplication" ? "x" : ""}</span>`)
           .join(" ");
-        div.innerHTML = `<span class="pill rarity-${p.rarity}">${p.rarity}</span> ${p.name} <span style="color:var(--text-dim)">Lv${p.level}</span> ${changes}`;
+        const levelText = p.max_level ? `Lv${p.level}/${p.max_level}` : `Lv${p.level}`;
+        div.innerHTML = `<span class="pill rarity-${p.rarity}">${p.rarity}</span> ${p.name} <span style="color:var(--text-dim)">${levelText}</span> ${changes}`;
         pickLog.appendChild(div);
       }
 
@@ -172,7 +203,7 @@
       playerStatsEl.innerHTML = "";
       const hasPlayerStats = (playerStats.base_stats || []).length || (playerStats.current_stats || []).length;
       playerStatsEmpty.style.display = hasPlayerStats ? "none" : "block";
-      if (hasPlayerStats) renderStatTable(playerStatsEl, playerStats.base_stats, playerStats.current_stats);
+      if (hasPlayerStats) renderStatTable(playerStatsEl, playerStats.base_stats, playerStats.current_stats, playerStats.max_xp_multiplier);
 
       const counters = state.run_counters || {};
       goldEl.textContent = fmt(counters.gold || 0);
@@ -188,6 +219,48 @@
         fpsEl.style.color = "";
       }
 
+      const enemyHealth = state.enemy_health || {};
+      const dpsHpRatioEl = document.getElementById("dps-hp-ratio");
+      const enemyHpDetailEl = document.getElementById("enemy-hp-detail");
+      if (enemyHealth.dps_to_hp_ratio != null) {
+        const pctPerSec = enemyHealth.dps_to_hp_ratio * 100;
+        dpsHpRatioEl.textContent = `${pctPerSec.toFixed(1)}%/s`;
+
+        // Color by trend, not an absolute number - there's no known-good fixed threshold (enemy HP
+        // scaling isn't documented), but whether THIS build's own ratio is rising or falling over
+        // the last ~20s is a reliable, self-relative signal: falling means DPS is losing ground to
+        // enemy scaling right now (invest in damage), flat/rising means the current split is
+        // keeping pace or winning (passives like XP Tome are safe to pick). Needs at least a few
+        // points of real history before trending means anything - shows neutral until then.
+        const history = state.enemy_health_history || [];
+        const latestT = history.length ? history[history.length - 1].t : null;
+        const recent = latestT == null ? [] : history.filter((p) => p.dps_to_hp_ratio != null && p.t >= latestT - 20);
+        if (recent.length >= 4) {
+          const half = Math.floor(recent.length / 2);
+          const earlyAvg = recent.slice(0, half).reduce((a, p) => a + p.dps_to_hp_ratio, 0) / half;
+          const lateAvg = recent.slice(half).reduce((a, p) => a + p.dps_to_hp_ratio, 0) / (recent.length - half);
+          const trendPct = earlyAvg > 0 ? (lateAvg - earlyAvg) / earlyAvg : 0;
+          if (trendPct < -0.1) {
+            dpsHpRatioEl.style.color = "var(--down)";
+            dpsHpRatioEl.title = "Falling behind enemy scaling - more DPS needed";
+          } else if (trendPct > 0.1) {
+            dpsHpRatioEl.style.color = "var(--up)";
+            dpsHpRatioEl.title = "Out-scaling enemies - safe to invest in passives (XP, luck, etc.)";
+          } else {
+            dpsHpRatioEl.style.color = "";
+            dpsHpRatioEl.title = "Holding steady against enemy scaling";
+          }
+        } else {
+          dpsHpRatioEl.style.color = "";
+          dpsHpRatioEl.title = "Not enough data yet to show a trend";
+        }
+        enemyHpDetailEl.textContent = `${fmt(enemyHealth.total_hp)} HP across ${enemyHealth.enemy_count} enemies`;
+      } else {
+        dpsHpRatioEl.textContent = "-";
+        dpsHpRatioEl.style.color = "";
+        enemyHpDetailEl.textContent = "";
+      }
+
       const effects = state.effects || [];
       effectsLog.innerHTML = "";
       effectsEmpty.style.display = effects.length ? "none" : "block";
@@ -198,15 +271,57 @@
         div.innerHTML = `<span class="pill">${e.source}</span> ${e.effectType} <span class="pill">${amountText}</span>`;
         effectsLog.appendChild(div);
       }
+
+      const itemsGranted = state.items_granted || [];
+      itemsGrantedLog.innerHTML = "";
+      itemsGrantedEmpty.style.display = itemsGranted.length ? "none" : "block";
+      for (const i of [...itemsGranted].reverse()) {
+        const div = document.createElement("div");
+        div.className = "pick-log-item";
+        div.innerHTML = `<span class="pill">${i.source}</span> ${i.item} <span class="pill rarity-${i.rarity}">${i.rarity}</span>`;
+        itemsGrantedLog.appendChild(div);
+      }
+
+      const progLimits = state.progression_limits || {};
+      const hasProgLimits = Object.keys(progLimits).length > 0;
+      progressionLimitsEmpty.style.display = hasProgLimits ? "none" : "block";
+      progressionLimitsEl.innerHTML = "";
+      if (hasProgLimits) {
+        const tile = (label, value, danger) => {
+          const div = document.createElement("div");
+          div.className = "stat";
+          div.innerHTML = `<div class="label">${label}</div><div class="value" ${danger ? 'style="color:var(--down)"' : ""}>${value}</div>`;
+          progressionLimitsEl.appendChild(div);
+        };
+        tile("Weapon Level Cap", `${progLimits.weapon_max_level}${progLimits.num_extra_weapon_levels ? ` (+${progLimits.num_extra_weapon_levels})` : ""}`);
+        tile("Tome Level Cap", `${progLimits.tome_max_level}${progLimits.num_extra_tome_levels ? ` (+${progLimits.num_extra_tome_levels})` : ""}`);
+        tile("Weapon Slots", `${progLimits.num_available_weapon_slots}/${progLimits.num_max_weapon_slots}`, progLimits.weapons_maxed);
+        tile("Tome Slots", `${progLimits.num_available_tome_slots}/${progLimits.num_max_tome_slots}`, progLimits.tomes_maxed);
+        tile("Enemies", `${enemyHealth.enemy_count ?? "-"}/${progLimits.num_max_enemies}`, progLimits.has_max_enemies);
+        if (progLimits.is_final_swarm) tile("Status", "FINAL SWARM", true);
+      }
     }
+
+    let socket = null;
 
     function connect() {
       const proto = location.protocol === "https:" ? "wss:" : "ws:";
       const ws = new WebSocket(`${proto}//${location.host}/ws`);
+      socket = ws;
       ws.onmessage = (ev) => render(JSON.parse(ev.data));
-      ws.onclose = () => setTimeout(connect, 2000);
+      ws.onclose = () => {
+        if (socket === ws) setTimeout(connect, 2000);
+      };
     }
     connect();
+
+    document.getElementById("reconnect-btn").addEventListener("click", () => {
+      if (socket) {
+        socket.onclose = null;
+        socket.close();
+      }
+      connect();
+    });
   </script>
 </body>
 </html>

@@ -70,6 +70,11 @@ async def run_detail(request: Request, run_id: int):
     final_player_stats = db.get_final_player_stats(run_id)
     final_run_counters = db.get_final_run_counters(run_id)
     performance_history = db.get_performance_history(run_id)
+    enemy_health_history = db.get_enemy_health_history(run_id)
+    ratios = [p["dps"] / p["total_hp"] for p in enemy_health_history if p["total_hp"] > 0]
+    avg_dps_to_hp_ratio = sum(ratios) / len(ratios) if ratios else None
+    final_swarm_started_at = db.get_final_swarm_started(run_id)
+    items_granted = db.get_items_granted(run_id)
     return templates.TemplateResponse(
         request,
         "run_detail.html",
@@ -82,6 +87,10 @@ async def run_detail(request: Request, run_id: int):
             "final_player_stats": final_player_stats,
             "final_run_counters": final_run_counters,
             "performance_history": performance_history,
+            "enemy_health_history": enemy_health_history,
+            "avg_dps_to_hp_ratio": avg_dps_to_hp_ratio,
+            "final_swarm_started_at": final_swarm_started_at,
+            "items_granted": items_granted,
         },
     )
 
